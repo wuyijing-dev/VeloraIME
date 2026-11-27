@@ -75,12 +75,15 @@ if(VELORA_BUILD_DEMO)
     qt_add_executable(veloraime-demo demo/main.cpp)
     qt_add_resources(veloraime-demo velora_demo PREFIX /demo BASE demo
         FILES demo/Main.qml demo/cloud-production-1.pub.pem)
+    qt_add_resources(veloraime-demo velora_demo_fonts PREFIX /demo/fonts BASE assets/fonts
+        FILES assets/fonts/Nunito.ttf)
     target_link_libraries(veloraime-demo PRIVATE Qt6::Quick Qt6::QuickControls2)
     target_compile_definitions(veloraime-demo PRIVATE
         VELORA_QML_INSTALL_DIR="${VELORA_QML_INSTALL_DIR}"
     )
     add_dependencies(veloraime-demo VeloraIMEPlugin)
     install(TARGETS veloraime-demo RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    install(FILES assets/fonts/LICENSE.Nunito DESTINATION "${CMAKE_INSTALL_DATADIR}/veloraime/licenses")
     if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
         add_test(NAME veloraime-demo-smoke COMMAND veloraime-demo --smoke-test)
         set_tests_properties(veloraime-demo-smoke PROPERTIES

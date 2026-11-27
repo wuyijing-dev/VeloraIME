@@ -1,6 +1,18 @@
 # Liquid Glass 设计规范
 
-本项目采用 iOS 26 Liquid Glass 的材质与交互原则，以原创 QML 组件实现。关键信息保持清晰，玻璃用于承载交互控件。键盘面板随宿主内容、深浅主题和无障碍设置调整材质。视觉验收以本规范和 Apple HIG 的材质、动效与可读性要求为依据。 [Apple 材质指南](https://developer.apple.com/design/human-interface-guidelines/materials) · [Apple 无障碍指南](https://developer.apple.com/design/human-interface-guidelines/accessibility)
+本项目用原创 QML 实现 iOS 26 Liquid Glass 的材质与交互原则。编辑器使用安静的内容底色。悬浮工具、输入面板和临时菜单构成交互层。光线在圆润边缘集中，背景色经过折射与模糊进入控件。键盘根据背景、明暗和辅助功能改变材质。 [Apple 材质指南](https://developer.apple.com/design/human-interface-guidelines/materials) · [Adopting Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass) · [WWDC25 Meet Liquid Glass](https://developer.apple.com/videos/play/wwdc2025/219/)
+
+## 官方原则在 Qt 中的落点
+
+| 官方设计原则 | VeloraIME 实现 |
+| --- | --- |
+| 交互层让内容透出 | 键盘与工具胶囊独立于正文表面。正文采用标准实色材料，玻璃面的背景来自宿主，窗口边缘保留可见的内容间隔 |
+| Regular 材质保护密集内容 | 键盘底板、候选与常用工具选择可读性优先的 regular 表现。明暗主题调整玻璃底色、边缘反光和阴影 |
+| 控件轮廓与光学共同表达深度 | 使用同心圆角、定向高光、浅阴影与边缘采样折射。常规键帽共享底板，一次按下只影响对应控件 |
+| 动效延续触摸意图 | 按下压缩键帽并强化局部反馈，释放恢复轮廓。减少动态效果和减少透明度各自对应可独立切换的渲染路径 |
+| 键位服务当前编辑任务 | 普通文本、邮箱、数字、PIN 各自使用匹配的布局和操作。候选区保持清晰，紧凑屏提供九键，主要独立控件保留 44×44 逻辑触摸区域 |
+
+[Apple 虚拟键盘指南](https://developer.apple.com/design/human-interface-guidelines/virtual-keyboards) · [Apple 按钮指南](https://developer.apple.com/design/human-interface-guidelines/buttons) · [Apple 无障碍指南](https://developer.apple.com/design/human-interface-guidelines/accessibility)
 
 ## 视觉层级
 
@@ -11,14 +23,14 @@
 | 键帽与候选 | 键帽采用轻微色差和清晰触摸边界，候选条沿用面板材质。文字、图标、焦点环清晰渲染，按下或选中用对比度、轮廓与填色表达 |
 | 长按菜单、撤销提示 | 共享材质语言，局部提高底色不透明度，保证与候选区的层次稳定。长按菜单靠近源键并保持在安全区域 |
 
-采用原创字形搭配、图标、控件比例与排布。项目不分发 Apple 资产。首选沿用现有固件的 Noto Sans CJK/DejaVu Sans，后续按可读性和授权评估字体。功能键提供图标或短标签及可访问名称，Emoji 作为输入内容。
+采用原创字形搭配、图标、控件比例与排布。Demo 使用 Nunito 搭配 Noto Sans CJK，键盘沿用清晰的系统字形并提供语言回退。功能键提供图标或短标签及可访问名称，Emoji 作为输入内容。 [Nunito 上游](https://fonts.google.com/specimen/Nunito) · [Nunito 分发许可](../assets/fonts/LICENSE.Nunito)
 
 ## 设计参数和交互
 
 - 语义令牌至少覆盖 `surfaceTint`、`surfaceOpacity`、`keyFill`、`keyPressedFill`、`rimHighlight`、`textPrimary`、`focusRing`、`accent`、`panelRadius` 和 `motionDuration`。浅色与深色分别调参。面板圆角初值 24、键帽 10–14、键间视觉间隔 4–8，单位均为 QML 逻辑像素，按真机 DPI 和手测调整。
 - 文字合成后的对比度目标至少 4.5:1，功能轮廓、焦点环及大图标至少 3:1。以合成后像素验收，覆盖极亮、极暗、视频、纹理及高对比条纹背景。高对比模式增强文字和边界，减少透明度模式使用实色面板。
 - 交互目标为 44×44 QML 逻辑像素且触控区互不重叠。十列布局在容器不足时先调整可用宽度、边距和热区，再提供放大、九键等可操作布局，紧凑 QWERTY 若达不到触控目标须记录可用尺寸区间及误触结果。不同 DPI 下以板端实际触摸区域验证。
-- 面板优先适应横屏，支持纵屏、安全区和大字体。候选栏可横向翻页或展开，布局切换保持输入区框架稳定；应用按键盘可见矩形让出当前编辑区。
+- 5.5 英寸参考屏按 1080×1920 物理像素输出。RK3568 启动器为 VeloraIME 设置 1080 / 414 的应用缩放系数，竖屏布局为约 414×736 逻辑像素。目标触摸高度仍按逻辑像素计算，44 对应约 115 物理像素。等比旋转时复用同一缩放。候选栏可翻页或展开，宿主按键盘可见矩形让出编辑区。 [Qt High DPI](https://doc.qt.io/qt-6.12/highdpi.html)
 - 按下立即给局部高光、色调或键帽反馈，按下和释放的视觉变化不改变命中区域。进退场和布局变化初值 150–240 ms，背景采样只跟随内容可见变化。减少动态效果时取消弹性、位移和持续反光，保留可读的状态变化。
 - 快速多指输入保持单次触摸对应一次字符或操作。轻点、长按、滑行、空格移动光标及退格连发的触点归属要明确。长按菜单验证点选、滑选、手指移出取消以及抬起后无二次提交。触摸不依赖悬停。应能用实体键和辅助技术操作候选切换及键盘关闭。
 

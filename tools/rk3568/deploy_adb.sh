@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# != 2 || ! -d "$1/usr/share/veloraime" || ! -x "$1/usr/bin/veloraime-demo" ]]; then
-    echo "Usage: $0 STAGED_INSTALLATION ADB_SERIAL" >&2
+if [[ $# -lt 2 || $# -gt 3 || ( $# == 3 && "$3" != --exclusive ) ||
+      ! -d "$1/usr/share/veloraime" || ! -x "$1/usr/bin/veloraime-demo" ]]; then
+    echo "Usage: $0 STAGED_INSTALLATION ADB_SERIAL [--exclusive]" >&2
     exit 2
 fi
 
 stage=$(realpath "$1")
 serial=$2
+exclusive=${3:-}
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 velora_adb=(adb -P "${ADB_SERVER_PORT:-5037}" -s "$serial")
 velora_archive=$(mktemp)
 velora_remote=$("${velora_adb[@]}" shell 'mktemp -d /tmp/veloraime-install.XXXXXX')
@@ -27,7 +30,7 @@ fi
 
 tar -cf "$velora_archive" -C "$stage" usr
 "${velora_adb[@]}" push "$velora_archive" "$velora_remote/payload.tar"
-"${velora_adb[@]}" shell "cd $velora_remote && sh -s" <<'REMOTE'
+"${velora_adb[@]}" shell "cd $velora_remote && sh -s -- '$exclusive'" <<'REMOTE'
 set -eu
 tar -xf payload.tar
 find usr -type f | while IFS= read -r file; do
@@ -48,5 +51,19 @@ sync
 . /etc/profile.d/qt6.sh
 umask 077
 export XDG_DATA_HOME="$PWD/test-data" XDG_CONFIG_HOME="$PWD/test-config"
-/usr/bin/veloraime-demo --verify-input
+if [ "${1:-}" = --exclusive ]; then
+    /usr/bin/veloraime-demo --smoke-test
+else
+    /usr/bin/veloraime-demo --verify-input
+fi
 REMOTE
+
+if [[ $exclusive == --exclusive ]]; then
+    "${velora_adb[@]}" push "$script_dir/S95veloraime" "$velora_remote/S95veloraime"
+    "${velora_adb[@]}" push "$script_dir/exclusive_display.sh" "$velora_remote/exclusive_display.sh"
+    "${velora_adb[@]}" shell "set -eu
+        install -o root -g root -m 0755 $velora_remote/S95veloraime /etc/init.d/S95veloraime
+        install -o root -g root -m 0755 $velora_remote/exclusive_display.sh /usr/sbin/veloraime-display
+        /usr/sbin/veloraime-display enable
+        sync"
+fi

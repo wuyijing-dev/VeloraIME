@@ -78,6 +78,7 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName(QStringLiteral("VeloraIME"));
     QCoreApplication::setApplicationName(QStringLiteral("VeloraIME Demo"));
     QQuickStyle::setStyle(QStringLiteral("Basic"));
+    QFontDatabase::addApplicationFont(QStringLiteral(":/demo/fonts/Nunito.ttf"));
     configureVeloraFonts();
 
     QCommandLineParser parser;
@@ -88,9 +89,12 @@ int main(int argc, char *argv[])
                                        QStringLiteral("Exercise the visible keyboard and exit."));
     const QCommandLineOption snapshot(QStringLiteral("snapshot"), QStringLiteral(
                                     "Save a screenshot after input verification."), QStringLiteral("path"));
+    const QCommandLineOption kiosk(QStringLiteral("kiosk"),
+                                    QStringLiteral("Run fullscreen on a dedicated touch display."));
     parser.addOption(smokeTest);
     parser.addOption(inputTest);
     parser.addOption(snapshot);
+    parser.addOption(kiosk);
     parser.process(app);
 
     const QDir executableDirectory(QCoreApplication::applicationDirPath());
@@ -109,6 +113,19 @@ int main(int argc, char *argv[])
     engine.load(QUrl(QStringLiteral("qrc:/demo/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
+    if (parser.isSet(kiosk)) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().front());
+        if (!window)
+            return 1;
+        window->setCursor(Qt::BlankCursor);
+        window->showFullScreen();
+        QTimer::singleShot(800, window, [window] {
+            const auto scale = window->devicePixelRatio();
+            qInfo("VeloraIME display: %dx%d logical, %dx%d physical, scale %.4f",
+                  window->width(), window->height(), qRound(window->width() * scale),
+                  qRound(window->height() * scale), double(scale));
+        });
+    }
     if (parser.isSet(inputTest)) {
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().front());
         if (!window)

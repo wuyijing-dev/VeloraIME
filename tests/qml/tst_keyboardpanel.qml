@@ -50,6 +50,8 @@ TestCase {
     }
 
     function init() {
+        testCase.width = 640;
+        testCase.height = 480;
         keyboard.visible = true;
         keyboard.controller.cancelComposition();
         keyboard.controller.language = "en-US";
@@ -82,6 +84,34 @@ TestCase {
         touch.release(0, q).commit();
         touch.release(1, w).commit();
         compare(editor.text, "qw");
+        verify(editor.activeFocus);
+    }
+
+    function test_phonePortraitTouchGeometry() {
+        testCase.width = 414;
+        testCase.height = 736;
+        verify(waitForPolish(keyboard.Window.window));
+        compare(keyboard.width, 414);
+        verify(keyboard.height >= 275 && keyboard.height <= 325);
+        verify(keyboard.needsCompactQwerty);
+
+        const q = key("key-text-q");
+        const p = key("key-text-p");
+        const qLocation = q.mapToItem(keyboard, 0, 0);
+        const pLocation = p.mapToItem(keyboard, p.width, 0);
+        verify(q.width >= 38 && q.width < 44);
+        verify(q.height >= 48);
+        verify(qLocation.x >= 7 && pLocation.x <= keyboard.width - 7);
+        for (const name of ["keyboardLanguage", "keyboardLayouts", "keyboardEmoji", "keyboardClipboard", "hideKeyboard", "key-backspace", "key-space", "key-enter", "key-symbol"])
+            verify(key(name).width >= 44 && key(name).height >= 44, name);
+
+        keyboard.controller.language = "zh-CN";
+        keyboard.controller.pinyinMode = "t9";
+        verify(waitForPolish(keyboard.Window.window));
+        const two = key("key-text-2");
+        verify(two.width >= 44 && two.height >= 44);
+        mouseClick(two);
+        compare(keyboard.controller.preedit, "2");
         verify(editor.activeFocus);
     }
 

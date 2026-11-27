@@ -35,6 +35,17 @@ Item {
     }
 
     Rectangle {
+        x: -1
+        y: 3
+        width: parent.width + 2
+        height: parent.height
+        radius: root.theme.panelRadius + 1
+        color: root.theme.surfaceShadow
+        antialiasing: true
+        visible: !root.theme.highContrast
+    }
+
+    Rectangle {
         anchors.fill: parent
         radius: root.theme.panelRadius
         color: root.theme.solidSurface
@@ -80,8 +91,8 @@ Item {
                 property color tint: root.theme.surfaceTint
                 property real tintStrength: root.theme.surfaceOpacity
                 property real cornerRadius: Math.min(root.theme.panelRadius, Math.min(width, height) / 2)
-                property real refraction: root.lightMaterial ? 0 : 8
-                property real blurRadius: root.lightMaterial ? 10 : 21
+                property real refraction: root.lightMaterial ? 0 : 9
+                property real blurRadius: root.lightMaterial ? 7 : 14
                 fragmentShader: "qrc:/qt/qml/Rk/TouchKeyboard/shaders/GlassPanel.frag.qsb"
             }
         }
@@ -119,7 +130,7 @@ Item {
                 color: root.theme.rimShadow
             }
         }
-        opacity: root.theme.dark ? 0.37 : 0.58
+        opacity: root.sampleBackground ? 0.24 : (root.theme.dark ? 0.42 : 0.62)
         antialiasing: true
     }
 }

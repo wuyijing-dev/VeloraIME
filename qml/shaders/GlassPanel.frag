@@ -32,23 +32,36 @@ void main()
                                       : vec2(0.0, sign(position.y));
     }
 
-    float refractionWeight = smoothstep(-22.0, -2.0, edge);
-    vec2 center = qt_TexCoord0 - normal * (refraction * refractionWeight) / panelSize;
-    vec2 offset = vec2(blurRadius, blurRadius) / panelSize;
-    vec3 background = texture(source, center).rgb * 0.20;
-    background += texture(source, center + vec2(offset.x, 0.0)).rgb * 0.11;
-    background += texture(source, center - vec2(offset.x, 0.0)).rgb * 0.11;
-    background += texture(source, center + vec2(0.0, offset.y)).rgb * 0.11;
-    background += texture(source, center - vec2(0.0, offset.y)).rgb * 0.11;
-    background += texture(source, center + offset).rgb * 0.09;
-    background += texture(source, center - offset).rgb * 0.09;
-    background += texture(source, center + vec2(offset.x, -offset.y)).rgb * 0.09;
-    background += texture(source, center + vec2(-offset.x, offset.y)).rgb * 0.09;
+    float edgeLens = smoothstep(-16.0, -1.0, edge);
+    vec2 center = qt_TexCoord0 - normal * (refraction * edgeLens * edgeLens) / panelSize;
+    vec2 offset = vec2(blurRadius) / panelSize;
+    vec2 diagonal = offset * 0.72;
+    vec3 background = texture(source, center).rgb * 0.24;
+    background += texture(source, center + vec2(offset.x, 0.0)).rgb * 0.12;
+    background += texture(source, center - vec2(offset.x, 0.0)).rgb * 0.12;
+    background += texture(source, center + vec2(0.0, offset.y)).rgb * 0.12;
+    background += texture(source, center - vec2(0.0, offset.y)).rgb * 0.12;
+    background += texture(source, center + diagonal).rgb * 0.07;
+    background += texture(source, center - diagonal).rgb * 0.07;
+    background += texture(source, center + vec2(diagonal.x, -diagonal.y)).rgb * 0.07;
+    background += texture(source, center + vec2(-diagonal.x, diagonal.y)).rgb * 0.07;
 
-    vec3 material = mix(background, tint.rgb, tintStrength);
-    float topLight = max(0.0, dot(normal, vec2(-0.35, -0.93)));
-    float sheen = topLight * refractionWeight * refractionWeight
-        * (refraction > 0.0 ? 0.26 : 0.14);
-    material = mix(material, vec3(0.91, 0.96, 1.0), sheen);
+    float luminance = dot(background, vec3(0.2126, 0.7152, 0.0722));
+    float darkMode = 1.0 - step(0.5, tint.r);
+    float correction = mix(1.0 - luminance, luminance, darkMode);
+    float density = tintStrength + 0.17 * correction;
+    vec3 material = mix(mix(vec3(luminance), background, 0.72), tint.rgb, density);
+
+    // The curved edge transmits more of its surroundings and catches light
+    // differently around the silhouette. The center stays diffuse for labels.
+    float innerRim = smoothstep(-7.0, -3.0, edge) * (1.0 - smoothstep(-1.7, 0.0, edge));
+    material = mix(material, background, innerRim * (refraction > 0.0 ? 0.20 : 0.07));
+    float illuminated = max(0.0, dot(normal, vec2(-0.49, -0.87)));
+    float shaded = max(0.0, dot(normal, vec2(0.38, 0.92)));
+    float reflection = pow(illuminated, 2.6) * innerRim;
+    float border = smoothstep(-1.5, -0.2, edge);
+    material *= 1.0 - shaded * (0.08 * innerRim + 0.06 * border);
+    material = mix(material, vec3(0.97, 0.98, 1.0),
+                   reflection * mix(0.35, 0.16, darkMode) + illuminated * border * 0.08);
     fragColor = vec4(material, 1.0) * coverage * qt_Opacity;
 }

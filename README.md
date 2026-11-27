@@ -79,6 +79,8 @@ sha256sum build/veloraime-rk3568-update.img
 ADB_SERVER_PORT=5038 bash tools/rk3568/deploy_adb.sh build/stage-rk3568 ADB_SERIAL
 ```
 
+加上 `--exclusive` 后，板子开机进入 VeloraIME 全屏。专用模式保留 Weston 与硬件、网络服务，并把已知的其他显示应用启动器移至 `/etc/veloraime/paused-init`。在板端以 root 运行 `veloraime-display restore` 可还原启动器配置，重启后生效。5.5 英寸 1080×1920 DSI 屏默认采用约 414×736 逻辑像素，物理分辨率由 Weston 保持。应用缩放可通过 `/etc/default/veloraime` 的 `VELORA_DISPLAY_SCALE` 覆盖。
+
 ## 文档
 
 - [开发约定](AGENTS.md)

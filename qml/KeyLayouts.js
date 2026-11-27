@@ -72,10 +72,10 @@ function t9(digit, group) {
 }
 
 function footer(chinese, extra, period, symbolsVisible) {
-    return [action(symbolsVisible ? "letters" : "symbol", symbolsVisible ? (chinese ? "拼音" : "ABC") : "123", 1.15),
-            action("language", "中 / EN", 1.38), extra,
-            action("space", chinese ? "空格" : "Space", 4.65),
-            period, action("enter", "", 1.45, "enter")]
+    return [action(symbolsVisible ? "letters" : "symbol", symbolsVisible ? (chinese ? "拼音" : "ABC") : "123", 1.30),
+            action("language", "中 / EN", 1.35), extra,
+            action("space", chinese ? "空格" : "Space", 4.35),
+            period, action("enter", "", 1.55, "enter")]
 }
 
 const accents = {

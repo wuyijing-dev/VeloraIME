@@ -1,41 +1,71 @@
 #!/bin/sh
 
 pidfile=/run/veloraime-demo.pid
+binary=/usr/bin/veloraime-demo
 
-case "$1" in
-  start)
-    if [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-      exit 0
-    fi
-    . /etc/profile.d/qt6.sh
-    if awk '$2 == "/userdata" { found=1 } END { exit !found }' /proc/mounts; then
-      export XDG_DATA_HOME=/userdata/veloraime/data
-      export XDG_CONFIG_HOME=/userdata/veloraime/config
-      umask 077
-      mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" || exit 1
-    fi
-    (
-      count=0
-      while [ ! -S "$XDG_RUNTIME_DIR/${WAYLAND_DISPLAY:-wayland-0}" ]; do
-        [ "$count" -lt 100 ] || exit 1
-        count=$((count + 1))
-        sleep 0.1
-      done
-      exec /usr/bin/veloraime-demo
-    ) > /var/log/veloraime-demo.log 2>&1 &
-    echo "$!" > "$pidfile"
-    ;;
-  stop)
-    if [ -r "$pidfile" ]; then
-      kill "$(cat "$pidfile")" 2>/dev/null || true
-      rm -f "$pidfile"
-    fi
-    ;;
-  restart)
-    "$0" stop
-    "$0" start
-    ;;
-  *)
-    exit 1
-    ;;
+running() {
+    [ -r "$pidfile" ] || return 1
+    pid=$(cat "$pidfile")
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$(readlink "/proc/$pid/exe" 2>/dev/null)" in
+        "$binary"|"$binary (deleted)") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+case "${1:-}" in
+    start)
+        [ ! -e /etc/veloraime/disabled ] || exit 0
+        if running; then exit 0; fi
+        umask 077
+        nohup "$0" run </dev/null >/var/log/veloraime-demo.log 2>&1 &
+        printf '%s\n' "$!" >"$pidfile"
+        ;;
+    run)
+        . /etc/profile.d/qt6.sh
+        [ ! -r /etc/default/veloraime ] || . /etc/default/veloraime
+        scale=${VELORA_DISPLAY_SCALE:-}
+        if [ -z "$scale" ]; then
+            for modes in /sys/class/drm/card*-DSI-*/modes; do
+                if [ -r "$modes" ] && grep -qx '1080x1920' "$modes"; then
+                    scale=2.608695652
+                    break
+                fi
+            done
+        fi
+        if [ -n "$scale" ]; then
+            export QT_SCALE_FACTOR=$scale
+            export QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough
+        fi
+        if awk '$2 == "/userdata" { found=1 } END { exit !found }' /proc/mounts; then
+            export XDG_DATA_HOME=/userdata/veloraime/data
+            export XDG_CONFIG_HOME=/userdata/veloraime/config
+            export XDG_CACHE_HOME=/userdata/veloraime/cache
+            umask 077
+            mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" || exit 1
+        fi
+        count=0
+        while [ ! -S "$XDG_RUNTIME_DIR/${WAYLAND_DISPLAY:-wayland-0}" ]; do
+            [ "$count" -lt 100 ] || exit 1
+            count=$((count + 1))
+            sleep 0.1
+        done
+        exec "$binary" --kiosk --snapshot /run/veloraime-live.png
+        ;;
+    stop)
+        if running; then
+            kill "$pid"
+        fi
+        rm -f "$pidfile"
+        ;;
+    restart)
+        "$0" stop
+        "$0" start
+        ;;
+    status)
+        running && printf 'VeloraIME running with PID %s.\n' "$pid"
+        ;;
+    *)
+        exit 2
+        ;;
 esac

@@ -10,6 +10,7 @@ Item {
     property string label: ""
     property string gestureLetter: ""
     property string detail: ""
+    property bool detailBelow: false
     property string icon: ""
     property string accessibleLabel: label
     property bool secondary: false
@@ -22,8 +23,10 @@ Item {
     property bool preferScroll: false
     property bool highlighted: false
     property real visualGap: 4
+    property real verticalGap: 6
     property real fontSize: secondary ? 15 : 22
-    property real visualRadius: 12
+    property real visualRadius: secondary ? 15 : 12
+    readonly property bool pressedVisual: tap.pressed || drag.active || highlighted
 
     signal activated
     signal held
@@ -49,34 +52,43 @@ Item {
         anchors.fill: parent
         anchors.leftMargin: root.visualGap / 2
         anchors.rightMargin: root.visualGap / 2
-        anchors.topMargin: root.visualGap / 2
-        anchors.bottomMargin: root.visualGap / 2
-        radius: root.visualRadius
+        anchors.topMargin: root.verticalGap / 2
+        anchors.bottomMargin: root.verticalGap / 2
+        radius: Math.min(root.visualRadius, Math.min(width, height) / 2)
         antialiasing: true
-        color: tap.pressed || root.highlighted || drag.active ? root.theme.keyPressedFill : (root.accent || root.selected ? root.theme.accent : (root.transparentRest ? "transparent" : (root.secondary ? root.theme.functionFill : root.theme.keyFill)))
+        color: root.pressedVisual ? root.theme.keyPressedFill : (root.accent ? root.theme.accent : (root.selected ? root.theme.selectionFill : (root.transparentRest ? "transparent" : (root.secondary ? root.theme.functionFill : root.theme.keyFill))))
         border.color: root.highlighted || root.activeFocus ? root.theme.focusRing : root.theme.keyBorder
-        border.width: root.highlighted || root.activeFocus || root.theme.highContrast ? 2 : (root.transparentRest && !tap.pressed ? 0 : 1)
+        border.width: root.highlighted || root.activeFocus ? 2 : (root.transparentRest && !root.pressedVisual && !root.selected ? 0 : (root.theme.highContrast ? 2 : 1))
+        scale: root.theme.reduceMotion || root.highlighted ? 1 : (root.pressedVisual ? 0.95 : 1)
+
+        Behavior on scale {
+            enabled: !root.theme.reduceMotion
+            NumberAnimation {
+                duration: root.pressedVisual ? 65 : 140
+                easing.type: Easing.OutCubic
+            }
+        }
 
         Behavior on color {
-            enabled: !tap.pressed && root.theme.motionDuration > 0
+            enabled: !root.pressedVisual && root.theme.motionDuration > 0
             ColorAnimation {
                 duration: Math.round(root.theme.motionDuration * 0.65)
             }
         }
 
         Rectangle {
-            visible: !root.transparentRest && !root.theme.highContrast
+            visible: (!root.transparentRest || root.selected) && !root.theme.highContrast
             anchors.fill: parent
             anchors.margins: 1
             radius: parent.radius - 1
-            opacity: tap.pressed ? 0.66 : 0.35
+            opacity: root.pressedVisual ? 0.41 : 0.30
             gradient: Gradient {
                 GradientStop {
                     position: 0
                     color: root.theme.rimHighlight
                 }
                 GradientStop {
-                    position: 0.34
+                    position: 0.26
                     color: "transparent"
                 }
                 GradientStop {
@@ -92,31 +104,37 @@ Item {
 
         Text {
             id: glyph
-            readonly property bool inverted: (root.accent || root.selected) && !tap.pressed && !root.highlighted
+            readonly property bool inverted: root.accent && !root.pressedVisual
 
             anchors.centerIn: parent
+            anchors.verticalCenterOffset: root.detailBelow ? -5 : 0
             width: Math.max(1, parent.width - 6)
+            height: Math.max(0, parent.height - (root.detailBelow ? 13 : 4))
             visible: root.icon === ""
             text: root.label
             color: inverted ? root.theme.accentText : root.theme.textPrimary
             font.pixelSize: Math.round(root.fontSize * root.theme.fontScale)
-            font.weight: root.secondary ? Font.DemiBold : Font.Medium
+            font.weight: root.secondary ? Font.DemiBold : Font.Normal
             fontSizeMode: Text.Fit
             minimumPixelSize: 11
             maximumLineCount: 1
             horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
         }
 
         Text {
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.rightMargin: 5
+            anchors.right: root.detailBelow ? undefined : parent.right
+            anchors.top: root.detailBelow ? undefined : parent.top
+            anchors.horizontalCenter: root.detailBelow ? parent.horizontalCenter : undefined
+            anchors.bottom: root.detailBelow ? parent.bottom : undefined
+            anchors.rightMargin: 4
             anchors.topMargin: 2
-            visible: root.detail !== "" && parent.width >= 36
+            anchors.bottomMargin: 3
+            visible: root.detail !== "" && (root.detailBelow || parent.width >= 30)
             text: root.detail
             color: glyph.inverted ? root.theme.accentText : root.theme.textSecondary
-            font.pixelSize: Math.round(9 * root.theme.fontScale)
+            font.pixelSize: Math.round((root.detailBelow ? 9 : 8) * Math.min(root.theme.fontScale, 1.35))
         }
 
         Shape {
