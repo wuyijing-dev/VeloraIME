@@ -71,7 +71,7 @@ python3 tools/rk3568/package_firmware.py \
 sha256sum build/veloraime-rk3568-update.img
 ```
 
-固件启动脚本等 Weston 的 Wayland 套接字就绪后启动 Demo，可在板端查看 `/var/log/veloraime-demo.log`。`/userdata` 已挂载时，设置与词库缓存在该分区。全量 Rockchip 镜像包含 userdata 分区，刷写前需保留设备上的数据并确认板型与存储介质。
+固件把已知的其他显示应用启动器移至可恢复目录。Weston 的 Wayland 套接字就绪后，启动脚本全屏启动 VeloraIME，日志位于 `/var/log/veloraime-demo.log`。`/userdata` 已挂载时，设置与词库缓存在该分区。全量 Rockchip 镜像包含 userdata 分区，刷写前需保留设备上的数据并确认板型与存储介质。
 
 对正在使用的板子，可增量安装到 eMMC，并在现有 Weston 上验证输入。此路径适合保留板上的其他应用与数据。
 

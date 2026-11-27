@@ -108,12 +108,13 @@ void captureReferenceState(QQuickWindow *window, const QString &state, const QSt
     poll->setInterval(100);
     QObject::connect(poll, &QTimer::timeout, window,
                      [window, editor, controller, snapshot, secure, chinese, attempts = 0]() mutable {
+        ++attempts;
         const auto candidates = controller->property("candidates").toList();
         const bool sensitive = controller->property("sensitive").toBool();
         const bool composing = !chinese || controller->property("preedit").toString() == QStringLiteral("nihao");
         const bool ready = secure ? (sensitive && candidates.isEmpty() && editor->property("length").toInt() == 4)
                                   : (!sensitive && composing && !candidates.isEmpty());
-        if (!ready && ++attempts < 40)
+        if (attempts < 3 || (!ready && attempts < 40))
             return;
         const auto frame = window->grabWindow();
         const bool captured = frame.save(snapshot);

@@ -14,6 +14,10 @@ import tempfile
 
 SDK = Path.home() / "rk3568/workspace/atk_dlrk3568_linux6.1"
 INIT_SCRIPT = Path(__file__).resolve().with_name("S95veloraime")
+DISPLAY_TOOL = INIT_SCRIPT.with_name("exclusive_display.sh")
+PAUSED_INIT = Path("etc/veloraime/paused-init")
+DISPLAY_STARTUPS = ("S10lv_demo", "S49weston", "S50systemui", "S70qt6-demo",
+                    "S99z-luma", "S99z-rk3568-voice")
 FIRMWARE_FILES = ("MiniLoaderAll.bin", "boot.img", "misc.img", "oem.img",
                   "parameter.txt", "recovery.img", "uboot.img", "userdata.img")
 MODULE = Path("usr/share/veloraime/qml/Rk/TouchKeyboard")
@@ -32,9 +36,26 @@ def check_arm64(path):
 
 def add_installation(stage, rootfs, work):
     init_destination = "etc/init.d/S95veloraime"
+    tool_destination = "usr/sbin/veloraime-display"
     files = [(path, str(path.relative_to(stage))) for path in (stage / "usr").rglob("*")
              if path.is_file()]
-    files.append((INIT_SCRIPT, init_destination))
+    files.extend([(INIT_SCRIPT, init_destination), (DISPLAY_TOOL, tool_destination)])
+    executable_tools = {init_destination, tool_destination}
+
+    paused = []
+    for name in DISPLAY_STARTUPS:
+        original = f"/etc/init.d/{name}"
+        entry = run("debugfs", "-R", f"stat {original}", rootfs, capture_output=True, text=True)
+        if "Type: regular" not in entry.stdout:
+            continue
+        saved = work / f"saved-{name}"
+        run("debugfs", "-R", f"dump -p {original} {saved.name}", rootfs, cwd=work,
+            capture_output=True)
+        if not saved.is_file():
+            raise ValueError(f"Could not preserve {original}")
+        files.append((saved, str(PAUSED_INIT / name)))
+        paused.append(original)
+
     directories = {Path(name).parent for _, name in files}
     directories.update(parent for directory in tuple(directories) for parent in directory.parents)
     commands = []
@@ -45,13 +66,15 @@ def add_installation(stage, rootfs, work):
         result = run("debugfs", "-R", f"stat {name}", rootfs, capture_output=True, text=True)
         if "Type: directory" not in result.stdout:
             commands.append(f"mkdir {name}")
+        if directory in {PAUSED_INIT, PAUSED_INIT.parent}:
+            commands.append(f"set_inode_field {name} mode 040700")
 
     for number, (source, name) in enumerate(files):
         if not re.fullmatch(r"(usr|etc)/[\w./+-]+", name):
             raise ValueError(f"Unsupported firmware path {name}")
         temporary = f"install-{number}"
         shutil.copyfile(source, work / temporary)
-        mode = 0o755 if name == init_destination else stat.S_IMODE(source.stat().st_mode)
+        mode = 0o755 if name in executable_tools else stat.S_IMODE(source.stat().st_mode)
         current = run("debugfs", "-R", f"stat /{name}", rootfs, capture_output=True, text=True)
         if "Inode:" in current.stdout:
             if "Type: regular" not in current.stdout:
@@ -59,6 +82,7 @@ def add_installation(stage, rootfs, work):
             commands.append(f"rm /{name}")
         commands.extend([f"write {temporary} /{name}",
                          f"set_inode_field /{name} mode {0o100000 | mode:07o}"])
+    commands.extend(f"rm {original}" for original in paused)
 
     command_file = work / "install.debugfs"
     command_file.write_text("\n".join(commands) + "\n", encoding="utf-8")
@@ -69,9 +93,13 @@ def add_installation(stage, rootfs, work):
             capture_output=True)
         if not filecmp.cmp(check, source, shallow=False):
             raise ValueError(f"Image does not contain the expected /{name}")
-        expected_mode = 0o755 if name == init_destination else stat.S_IMODE(source.stat().st_mode)
+        expected_mode = 0o755 if name in executable_tools else stat.S_IMODE(source.stat().st_mode)
         if stat.S_IMODE(check.stat().st_mode) != expected_mode:
             raise ValueError(f"Image has an unexpected mode for /{name}")
+    for original in paused:
+        entry = run("debugfs", "-R", f"stat {original}", rootfs, capture_output=True, text=True)
+        if "Inode:" in entry.stdout:
+            raise ValueError(f"Competing startup remains enabled at {original}")
     run("e2fsck", "-fn", rootfs)
 
 
