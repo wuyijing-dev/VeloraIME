@@ -1,0 +1,25 @@
+name: Collect trends for editorial review
+
+on:
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Collect public Wikimedia page views
+        run: python3 packs/collect_trends.py --output trend-review/review.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veloraime-trend-review
+          path: trend-review/review.json
+          retention-days: 14

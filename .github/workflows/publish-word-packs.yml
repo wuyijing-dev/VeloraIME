@@ -1,0 +1,62 @@
+name: Publish signed word packs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-word-packs
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Build signed packs from reviewed entries
+        env:
+          PACK_SIGNING_PRIVATE_KEY: ${{ secrets.PACK_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_RUN_ATTEMPT" != "1" ]; then
+            echo 'Dispatch a new run to retain immutable pack versions.'
+            exit 1
+          fi
+          umask 077
+          key_path=$(mktemp)
+          trap 'rm -f "$key_path"' EXIT
+          printf '%s\n' "$PACK_SIGNING_PRIVATE_KEY" > "$key_path"
+          test -s "$key_path"
+          unset PACK_SIGNING_PRIVATE_KEY
+          published_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          python3 packs/publish.py --entries packs/dictionary.zh-CN.json \
+            --key "$key_path" --key-id production-1 --pack-id zh-dictionary \
+            --kind dictionary --valid-days 365 --version "$GITHUB_RUN_NUMBER" \
+            --published-at "$published_at" --output public/dictionary
+          python3 packs/publish.py --entries packs/hotwords.zh-CN.json \
+            --key "$key_path" --key-id production-1 --pack-id zh-hotwords \
+            --kind hotwords --valid-days 14 --version "$GITHUB_RUN_NUMBER" \
+            --published-at "$published_at" --output public/hotwords
+          chmod -R a+rX public
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy static feeds
+        id: deployment
+        uses: actions/deploy-pages@v4
