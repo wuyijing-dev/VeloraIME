@@ -40,6 +40,7 @@ find usr -type f | while IFS= read -r file; do
     mkdir -p "/${file%/*}"
     temporary=$(mktemp "/${file%/*}/.veloraime-XXXXXX")
     cp -p "$file" "$temporary"
+    chown 0:0 "$temporary"
     cmp -s "$file" "$temporary"
     mv -f "$temporary" "/$file"
 done

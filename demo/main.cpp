@@ -118,6 +118,14 @@ int main(int argc, char *argv[])
         });
     } else if (parser.isSet(smokeTest)) {
         QTimer::singleShot(250, &app, &QCoreApplication::quit);
+    } else if (parser.isSet(snapshot)) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().front());
+        if (!window)
+            return 1;
+        QTimer::singleShot(1200, window, [window, path = parser.value(snapshot)] {
+            if (!window->grabWindow().save(path))
+                qWarning("Could not save the live keyboard screenshot");
+        });
     }
     return app.exec();
 }
