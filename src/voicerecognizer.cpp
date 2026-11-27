@@ -1,16 +1,63 @@
 #include "voicerecognizer.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
+#include <QtEndian>
 
 #include <csignal>
 #include <unistd.h>
 
 namespace {
 constexpr auto bundledModel = "sherpa-onnx-rk3568-10-seconds-sense-voice-zh-en-ja-ko-yue-2025-09-09";
+constexpr int samplesPerSecond = 16000;
+constexpr int sampleBytes = 2;
+constexpr int maximumAudioBytes = 10 * samplesPerSecond * sampleBytes;
+constexpr int maximumWaveBytes = maximumAudioBytes + 64 * 1024;
+
+bool validWave(QByteArrayView bytes)
+{
+    if (bytes.size() < 44 || bytes.first(4) != "RIFF" || bytes.sliced(8, 4) != "WAVE"
+        || qFromLittleEndian<quint32>(bytes.data() + 4) != quint32(bytes.size() - 8)) {
+        return false;
+    }
+
+    bool hasFormat = false;
+    bool hasAudio = false;
+    qsizetype index = 12;
+    while (index + 8 <= bytes.size()) {
+        const auto type = bytes.sliced(index, 4);
+        const auto size = qFromLittleEndian<quint32>(bytes.data() + index + 4);
+        index += 8;
+        const qint64 paddedSize = qint64(size) + (size & 1);
+        if (paddedSize > bytes.size() - index)
+            return false;
+
+        const char *data = bytes.data() + index;
+        if (type == "fmt ") {
+            if (hasFormat || size < 16 || qFromLittleEndian<quint16>(data) != 1
+                || qFromLittleEndian<quint16>(data + 2) != 1
+                || qFromLittleEndian<quint32>(data + 4) != samplesPerSecond
+                || qFromLittleEndian<quint32>(data + 8) != samplesPerSecond * sampleBytes
+                || qFromLittleEndian<quint16>(data + 12) != sampleBytes
+                || qFromLittleEndian<quint16>(data + 14) != 16) {
+                return false;
+            }
+            hasFormat = true;
+        } else if (type == "data") {
+            if (!hasFormat || hasAudio || size < 3200 || size > maximumAudioBytes
+                || size % sampleBytes != 0) {
+                return false;
+            }
+            hasAudio = true;
+        }
+        index += paddedSize;
+    }
+    return hasAudio && index == bytes.size();
+}
 }
 
 VoiceRecognizer::VoiceRecognizer(QObject *parent)
@@ -30,7 +77,8 @@ VoiceRecognizer::VoiceRecognizer(QObject *parent)
     m_timeout.setSingleShot(true);
     connect(&m_timeout, &QTimer::timeout, this, [this] {
         cancel();
-        emit failed(tr("离线语音识别超时"));
+        if (m_phase == Idle || m_phase == Cancelling)
+            emit failed(tr("离线语音识别超时"));
     });
     connect(&m_process, &QProcess::finished, this, &VoiceRecognizer::finished);
     connect(&m_process, &QProcess::started, this, [this] {
@@ -39,8 +87,10 @@ VoiceRecognizer::VoiceRecognizer(QObject *parent)
     });
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
-            reset();
-            emit failed(tr("无法启动离线录音或识别程序"));
+            const bool cancelled = m_phase == Cancelling;
+            const auto generation = reset();
+            if (!cancelled && generation == m_generation)
+                emit failed(tr("无法启动离线录音或识别程序"));
         }
     });
 }
@@ -56,32 +106,76 @@ VoiceRecognizer::~VoiceRecognizer()
 
 bool VoiceRecognizer::available() const
 {
-    return !m_recorder.isEmpty() && QFileInfo(m_decoder).isExecutable()
+    return !m_recorder.isEmpty() && decoderAvailable();
+}
+
+bool VoiceRecognizer::decoderAvailable() const
+{
+    return QFileInfo(m_decoder).isExecutable()
         && QFileInfo(m_model).isFile() && QFileInfo(m_tokens).isFile();
 }
 
-void VoiceRecognizer::start(const QString &sessionToken)
+bool VoiceRecognizer::prepareAudio(const QString &sessionToken)
 {
-    if (busy() || !available() || sessionToken.isEmpty())
-        return;
     m_audio = std::make_unique<QTemporaryDir>(QDir::tempPath() + QStringLiteral("/velora-audio-XXXXXX"));
     if (!m_audio->isValid()) {
         reset();
         emit failed(tr("无法为录音分配临时目录"));
-        return;
+        return false;
     }
     m_sessionToken = sessionToken;
+    ++m_generation;
+    return true;
+}
+
+void VoiceRecognizer::start(const QString &sessionToken)
+{
+    if (busy() || !available() || sessionToken.isEmpty() || !prepareAudio(sessionToken))
+        return;
+
     m_stopped = false;
     m_process.setProcessEnvironment(QProcessEnvironment::systemEnvironment());
     m_process.setStandardOutputFile(QProcess::nullDevice());
     m_process.setStandardErrorFile(QProcess::nullDevice());
+    const auto generation = m_generation;
     setPhase(Recording);
+    if (generation != m_generation)
+        return;
     m_timeout.start(12000);
     m_process.start(m_recorder, {QStringLiteral("-q"), QStringLiteral("-D"), m_captureDevice,
                                  QStringLiteral("-t"), QStringLiteral("wav"), QStringLiteral("-f"),
                                  QStringLiteral("S16_LE"), QStringLiteral("-r"), QStringLiteral("16000"),
                                  QStringLiteral("-c"), QStringLiteral("1"), QStringLiteral("-d"),
                                  QStringLiteral("8"), m_audio->filePath(QStringLiteral("input.wav"))});
+}
+
+void VoiceRecognizer::decodeFile(const QUrl &audioFile, const QString &sessionToken)
+{
+    if (busy() || !decoderAvailable() || sessionToken.isEmpty())
+        return;
+
+    const QString path = audioFile.toLocalFile();
+    QFile input(path);
+    if (!audioFile.isLocalFile() || !QFileInfo(path).isFile() || !input.open(QIODevice::ReadOnly)) {
+        emit failed(tr("请选择本地 PCM WAV 音频"));
+        return;
+    }
+    const auto audio = input.read(maximumWaveBytes + 1);
+    if (audio.size() > maximumWaveBytes || !validWave(audio)) {
+        emit failed(tr("只支持不超过 10 秒的 16 kHz 单声道 PCM WAV"));
+        return;
+    }
+    if (!prepareAudio(sessionToken))
+        return;
+    QFile file(m_audio->filePath(QStringLiteral("input.wav")));
+    if (!file.open(QIODevice::WriteOnly) || file.write(audio) != audio.size() || !file.flush()) {
+        file.close();
+        reset();
+        emit failed(tr("无法准备音频文件"));
+        return;
+    }
+    file.close();
+    decode();
 }
 
 void VoiceRecognizer::stop()
@@ -114,7 +208,11 @@ void VoiceRecognizer::decode()
                        originalPath.isEmpty() ? libraryPath : libraryPath + u':' + originalPath);
     m_process.setProcessEnvironment(environment);
     m_process.setStandardOutputFile({});
+    m_process.setStandardErrorFile({});
+    const auto generation = m_generation;
     setPhase(Recognizing);
+    if (generation != m_generation)
+        return;
     m_timeout.start(20000);
     m_process.start(m_decoder, {QStringLiteral("--num-threads=1"),
                                 QStringLiteral("--provider=") + m_provider,
@@ -137,8 +235,9 @@ void VoiceRecognizer::finished(int exitCode, QProcess::ExitStatus exitStatus)
             decode();
             return;
         }
-        reset();
-        emit failed(tr("录音过短或音频设备不可用"));
+        const auto generation = reset();
+        if (generation == m_generation)
+            emit failed(tr("录音过短或音频设备不可用"));
         return;
     }
     if (m_phase != Recognizing)
@@ -146,7 +245,10 @@ void VoiceRecognizer::finished(int exitCode, QProcess::ExitStatus exitStatus)
 
     QString text;
     if (exitCode == 0 && exitStatus == QProcess::NormalExit) {
-        const auto lines = m_process.readAllStandardOutput().split('\n');
+        // Earlier sherpa-onnx releases wrote the recognition JSON to stderr.
+        const QByteArray output = m_process.readAllStandardOutput() + '\n'
+            + m_process.readAllStandardError();
+        const auto lines = output.split('\n');
         for (const auto &line : lines) {
             if (line.trimmed().startsWith('{'))
                 text = QJsonDocument::fromJson(line).object().value(QStringLiteral("text")).toString().trimmed();
@@ -155,19 +257,23 @@ void VoiceRecognizer::finished(int exitCode, QProcess::ExitStatus exitStatus)
         }
     }
     const QString token = m_sessionToken;
-    reset();
+    const auto generation = reset();
+    if (generation != m_generation)
+        return;
     if (text.isEmpty())
         emit failed(tr("未识别到可提交的文字"));
     else
         emit recognized(text, token);
 }
 
-void VoiceRecognizer::reset()
+quint64 VoiceRecognizer::reset()
 {
+    const auto generation = ++m_generation;
     m_timeout.stop();
     m_audio.reset();
     m_sessionToken.clear();
     setPhase(Idle);
+    return generation;
 }
 
 void VoiceRecognizer::setPhase(Phase phase)

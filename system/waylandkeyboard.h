@@ -116,5 +116,6 @@ private:
     QPointer<QQuickItem> m_panel;
     QTimer m_renderTimer;
     QImage m_image;
+    QSize m_presentedSize;
     std::vector<std::unique_ptr<Frame>> m_frames;
 };

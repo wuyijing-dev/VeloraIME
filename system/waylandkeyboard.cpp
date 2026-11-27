@@ -346,7 +346,11 @@ void WaylandKeyboard::updateHints(uint32_t hints, uint32_t purpose)
     m_hints = flags;
     if (m_hints.testAnyFlags(privacyHints))
         forgetSurrounding();
-    emit stateChanged();
+    // Qt's v1 client reports content_type and reset on entry. Its first
+    // commit_state may follow the first edit, so the classified field can
+    // already accept input using the initial serial.
+    m_ready = true;
+    updateFocus();
 }
 
 void WaylandKeyboard::setSurrounding(const char *text, uint32_t cursor, uint32_t anchor)
@@ -493,6 +497,7 @@ void WaylandKeyboard::hidePanel()
     emit stateChanged();
     wl_surface_attach(m_surface, nullptr, 0, 0);
     wl_surface_commit(m_surface);
+    m_presentedSize = {};
     flush();
 }
 
@@ -559,9 +564,16 @@ void WaylandKeyboard::render()
 
     memcpy(frame->memory, m_image.constBits(), size_t(frame->bytes));
     frame->busy = true;
+    if (!m_presentedSize.isEmpty() && m_presentedSize != size) {
+        // Weston anchors the panel when its surface first maps. Remap it when
+        // the candidate rail or a field mode changes the buffer height.
+        wl_surface_attach(m_surface, nullptr, 0, 0);
+        wl_surface_commit(m_surface);
+    }
     wl_surface_attach(m_surface, frame->buffer, 0, 0);
     wl_surface_damage(m_surface, 0, 0, width, height);
     wl_surface_commit(m_surface);
+    m_presentedSize = size;
     flush();
 }
 

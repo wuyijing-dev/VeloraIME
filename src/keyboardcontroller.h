@@ -3,6 +3,7 @@
 #include "keyboardlexicon.h"
 
 #include <QPointer>
+#include <QQueue>
 #include <QQuickWindow>
 #include <QThread>
 #include <QTimer>
@@ -164,6 +165,8 @@ private slots:
     void cancelAfterExternalEdit();
 
 private:
+    friend class EngineIntegration;
+
     struct Undo {
         QString text;
         QString code;
@@ -182,6 +185,13 @@ private:
         QString text;
         QString raw;
         QString code;
+    };
+    struct DefaultCommit {
+        quint64 session;
+        quint64 generation;
+        bool addSwipeSpace;
+        bool learn;
+        std::function<void()> followUp;
     };
 
     void trackFocus();
@@ -207,6 +217,11 @@ private:
     bool commitChinese(const QString &text, const QString &code, bool learn);
     const KeyboardCandidate *bestCompleteChinese() const;
     bool commitSwipe(const KeyboardCandidate *candidate, bool addSpace, bool learn);
+    void acceptDefaultCandidate(bool addSwipeSpace, bool learn, std::function<void()> followUp = {});
+    void commitDefaultCandidate(bool addSwipeSpace, bool learn);
+    void finishDefaultCommit();
+    bool deferKey(std::function<void()> action);
+    void cancelDeferredKeys();
     void requestCandidates(const QString &text);
     void clearUndo();
     void runUserOperation(const QString &name, std::function<bool(KeyboardLexicon &)> operation);
@@ -223,6 +238,7 @@ private:
     KeyboardLexicon *m_lexicon;
     std::atomic<quint64> m_generation{0};
     quint64 m_session = 0;
+    quint64 m_deferredEpoch = 0;
     QString m_language = QStringLiteral("en-US");
     QString m_pinyinMode = QStringLiteral("full");
     QString m_profile = QStringLiteral("default");
@@ -241,6 +257,10 @@ private:
     QStringList m_recentEmoji;
     QVariantList m_userPhrases;
     QTimer m_clipboardTimer;
+    QTimer m_defaultCommitTimer;
+    QQueue<std::function<void()>> m_deferredKeys;
+    std::optional<DefaultCommit> m_defaultCommit;
+    std::optional<quint64> m_deliveringDefaultSession;
     Undo m_undo;
     std::optional<PendingAcceptance> m_pendingAcceptance;
     Qt::InputMethodHints m_hints;
@@ -252,6 +272,7 @@ private:
     bool m_learningEnabled = true;
     bool m_fuzzyPinyin = false;
     bool m_inlinePreedit = false;
+    bool m_candidateLookupPending = false;
     bool m_sending = false;
     bool m_clipboardHistoryEnabled = false;
     bool m_userPhrasesRequested = false;

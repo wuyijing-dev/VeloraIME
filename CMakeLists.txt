@@ -51,9 +51,11 @@ qt_add_resources(VeloraIME velora_lexicon
     FILES
         data/lexicon/luna.dict.yaml
         data/lexicon/essay.txt
+        data/lexicon/cedict-pronunciations.tsv
         data/lexicon/TSCharacters.txt
         data/lexicon/TSPhrases.txt
         data/lexicon/english.txt
+        data/lexicon/english-frequency.tsv
 )
 
 qt_query_qml_module(VeloraIME TARGET_PATH velora_qml_target_path
@@ -61,7 +63,8 @@ qt_query_qml_module(VeloraIME TARGET_PATH velora_qml_target_path
 set(velora_qml_install_path "${VELORA_QML_INSTALL_DIR}/${velora_qml_target_path}")
 set_target_properties(VeloraIMEPlugin PROPERTIES INSTALL_RPATH "$ORIGIN")
 install(TARGETS VeloraIME VeloraIMEPlugin LIBRARY DESTINATION "${velora_qml_install_path}")
-install(FILES "${velora_qmldir}" "${velora_qmltypes}" DESTINATION "${velora_qml_install_path}")
+install(FILES "${velora_qmldir}" "${velora_qmltypes}" ${velora_qml_files}
+    DESTINATION "${velora_qml_install_path}")
 install(DIRECTORY data/lexicon/ DESTINATION "${CMAKE_INSTALL_DATADIR}/veloraime/licenses"
     FILES_MATCHING PATTERN "LICENSE.*" PATTERN "README.md")
 

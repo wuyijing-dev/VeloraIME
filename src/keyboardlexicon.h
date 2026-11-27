@@ -81,6 +81,7 @@ private:
     void loadEnglish();
     const QList<IndexEntry> &index(const QString &mode);
     QString simplify(const QString &text) const;
+    int englishScore(const QString &word, const QString &language) const;
     QList<KeyboardCandidate> chineseCandidates(const KeyboardQuery &query);
     QList<KeyboardCandidate> englishCandidates(const KeyboardQuery &query);
     QList<KeyboardCandidate> swipeCandidates(const KeyboardQuery &query);
@@ -91,8 +92,10 @@ private:
     QList<ChineseWord> m_chinese;
     QHash<QString, QList<IndexEntry>> m_indices;
     QHash<QString, QString> m_simplified;
+    QHash<quint32, int> m_boundaryScores;
     qsizetype m_maxPhraseLength = 1;
     QStringList m_english;
+    QHash<QString, int> m_englishFrequencies;
     QString m_profile;
     QSqlDatabase m_database;
     QHash<QString, QList<PersonalWord>> m_personalCache;

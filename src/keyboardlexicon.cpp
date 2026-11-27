@@ -23,7 +23,13 @@ using namespace Qt::StringLiterals;
 namespace {
 constexpr qsizetype maxCodeLength = 48;
 constexpr qsizetype maxResults = 60;
-constexpr qsizetype beamWidth = 5;
+constexpr qsizetype beamWidth = 9;
+constexpr int segmentBoundaryCost = 1190;
+
+quint32 pairKey(QChar first, QChar second)
+{
+    return (quint32(first.unicode()) << 16) | quint32(second.unicode());
+}
 
 QString lexiconPath(const QString &name)
 {
@@ -181,9 +187,13 @@ bool betterCandidate(const KeyboardCandidate &left, const KeyboardCandidate &rig
     return left.text < right.text;
 }
 
-void rank(QList<KeyboardCandidate> &words, qsizetype limit)
+void rank(QList<KeyboardCandidate> &words, qsizetype limit, qsizetype completeAt = -1)
 {
-    std::sort(words.begin(), words.end(), betterCandidate);
+    std::sort(words.begin(), words.end(), [completeAt](const auto &left, const auto &right) {
+        const bool leftComplete = left.consumed == completeAt;
+        const bool rightComplete = right.consumed == completeAt;
+        return leftComplete != rightComplete ? leftComplete : betterCandidate(left, right);
+    });
     QSet<QPair<QString, qsizetype>> seen;
     qsizetype written = 0;
     for (qsizetype i = 0; i < words.size() && written < limit; ++i) {
@@ -240,22 +250,6 @@ const QHash<QString, QString> &britishSpellings()
         {u"traveler"_s, u"traveller"_s}
     };
     return forms;
-}
-
-int englishScore(const QString &word, const QString &language)
-{
-    const auto &prior = englishPrior();
-    if (language == u"en-GB") {
-        static const auto preferred = [] {
-            QHash<QString, int> values;
-            const auto &forms = britishSpellings();
-            for (auto i = forms.cbegin(); i != forms.cend(); ++i)
-                values.insert(i.value(), 80 + englishPrior().value(i.key()));
-            return values;
-        }();
-        return prior.value(word) + preferred.value(word);
-    }
-    return prior.value(word) + (britishSpellings().contains(word) ? 55 : 0);
 }
 
 int scoreFrequency(int frequency)
@@ -335,6 +329,7 @@ void KeyboardLexicon::loadChinese()
     m_chineseLoaded = true;
 
     QHash<QString, int> frequencies;
+    QSet<QString> explicitWords;
     QHash<uint, QString> unambiguous;
     QSet<uint> polyphonic;
     QFile dictionary(lexiconPath(u"luna.dict.yaml"_s));
@@ -354,6 +349,8 @@ void KeyboardLexicon::loadChinese()
             if (!validSpelling(spelling))
                 continue;
             const QString text = QString::fromUtf8(fields[0]);
+            if (text.isEmpty() || text.startsWith(u'#'))
+                continue;
             const uint scalar = singleton(text);
             if (scalar && !polyphonic.contains(scalar)) {
                 const auto prior = unambiguous.constFind(scalar);
@@ -366,9 +363,11 @@ void KeyboardLexicon::loadChinese()
             }
             words.append({text, spelling, fields.size() > 2 ? fields[2].toInt() : 0});
             frequencies.insert(text, 0);
+            explicitWords.insert(text);
         }
     }
 
+    QStringList phraseSeeds;
     QFile priors(lexiconPath(u"essay.txt"_s));
     if (priors.open(QIODevice::ReadOnly)) {
         while (!priors.atEnd()) {
@@ -378,31 +377,13 @@ void KeyboardLexicon::loadChinese()
                 continue;
             const QString text = QString::fromUtf8(row.constData(), separator);
             const int frequency = row.mid(separator + 1).trimmed().toInt();
-            auto entry = frequencies.find(text);
-            if (entry != frequencies.end()) {
-                entry.value() = frequency;
-                continue;
-            }
-            if (frequency < 1500)
-                continue;
-            const QList<uint> scalars = text.toUcs4();
-            if (scalars.size() < 2 || scalars.size() > 8)
-                continue;
-            // Essay contributes high-frequency phrases whose readings can be recovered
-            // unambiguously from the shipped character dictionary.
-            QStringList spelling;
-            for (uint scalar : scalars) {
-                const auto reading = unambiguous.constFind(scalar);
-                if (reading == unambiguous.cend())
-                    break;
-                spelling.append(reading.value());
-            }
-            if (spelling.size() == scalars.size())
-                words.append({text, spelling.join(u' '), frequency});
+            if (frequency >= 100 || explicitWords.contains(text))
+                frequencies.insert(text, frequency);
+            if (frequency >= 1500 && text.size() >= 2 && text.size() <= 16
+                && !explicitWords.contains(text))
+                phraseSeeds.append(text);
         }
     }
-    for (ChineseWord &word : words)
-        word.score = scoreFrequency(std::max(word.score, frequencies.value(word.text)));
 
     auto loadConversions = [this](const QString &path) {
         QFile file(path);
@@ -422,6 +403,63 @@ void KeyboardLexicon::loadChinese()
     };
     loadConversions(lexiconPath(u"TSCharacters.txt"_s));
     loadConversions(lexiconPath(u"TSPhrases.txt"_s));
+
+    QFile pronunciations(lexiconPath(u"cedict-pronunciations.tsv"_s));
+    if (pronunciations.open(QIODevice::ReadOnly)) {
+        while (!pronunciations.atEnd()) {
+            const QByteArray line = pronunciations.readLine().trimmed();
+            if (line.isEmpty() || line.startsWith('#'))
+                continue;
+            const auto fields = line.split('\t');
+            if (fields.size() != 3)
+                continue;
+            const QString word = QString::fromUtf8(fields[0]);
+            const int count = std::max(frequencies.value(word), frequencies.value(QString::fromUtf8(fields[1])));
+            if (word.isEmpty() || count < 180)
+                continue;
+            const QString spelling = normalizeSpelling(QString::fromUtf8(fields[2]));
+            if (!validSpelling(spelling))
+                continue;
+            words.append({word, spelling, count});
+            explicitWords.insert(word);
+        }
+    }
+    for (const QString &phrase : phraseSeeds) {
+        if (explicitWords.contains(phrase))
+            continue;
+        const auto scalars = phrase.toUcs4();
+        QStringList spelling;
+        for (uint scalar : scalars) {
+            const auto reading = unambiguous.constFind(scalar);
+            if (reading == unambiguous.cend())
+                break;
+            spelling.append(reading.value());
+        }
+        if (scalars.size() >= 2 && scalars.size() <= 8 && spelling.size() == scalars.size())
+            words.append({phrase, spelling.join(u' '), frequencies.value(phrase)});
+    }
+    for (ChineseWord &word : words) {
+        const int frequency = std::max(word.score, frequencies.value(word.text));
+        const int syllables = int(word.spelling.count(u' ')) + 1;
+        word.score = scoreFrequency(frequency) + 22 * (syllables - 1);
+    }
+    std::sort(words.begin(), words.end(), [](const ChineseWord &left, const ChineseWord &right) {
+        const auto leftKey = std::tie(left.text, left.spelling);
+        const auto rightKey = std::tie(right.text, right.spelling);
+        return leftKey != rightKey ? leftKey < rightKey : left.score > right.score;
+    });
+    words.erase(std::unique(words.begin(), words.end(), [](const ChineseWord &left, const ChineseWord &right) {
+        return left.text == right.text && left.spelling == right.spelling;
+    }), words.end());
+    for (auto it = frequencies.cbegin(); it != frequencies.cend(); ++it) {
+        const QString &pair = it.key();
+        if (pair.size() != 2 || pair.front().isHighSurrogate() || it.value() < 100)
+            continue;
+        const int together = scoreFrequency(it.value());
+        const int apart = scoreFrequency(frequencies.value(pair.left(1)))
+            + scoreFrequency(frequencies.value(pair.right(1)));
+        m_boundaryScores.insert(pairKey(pair.front(), pair.back()), std::clamp((3 * together - apart) / 8, 0, 145));
+    }
     m_chinese = std::move(words);
 }
 
@@ -438,10 +476,46 @@ void KeyboardLexicon::loadEnglish()
         if (!word.isEmpty())
             m_english.append(QString::fromLatin1(word));
     }
+    QFile ranking(lexiconPath(u"english-frequency.tsv"_s));
+    if (ranking.open(QIODevice::ReadOnly)) {
+        while (!ranking.atEnd()) {
+            const QByteArray row = ranking.readLine().trimmed();
+            const qsizetype tab = row.indexOf('\t');
+            if (tab < 0 || row.startsWith('#'))
+                continue;
+            const QString word = QString::fromLatin1(row.constData(), tab);
+            const int frequency = row.mid(tab + 1).toInt();
+            if (frequency < 200 || frequency > 900 || !validSpelling(word) || word.contains(u' '))
+                continue;
+            m_english.append(word);
+            m_englishFrequencies.insert(word, frequency);
+        }
+    }
     for (const QString &word : britishSpellings())
         m_english.append(word);
     std::sort(m_english.begin(), m_english.end());
     m_english.erase(std::unique(m_english.begin(), m_english.end()), m_english.end());
+}
+
+int KeyboardLexicon::englishScore(const QString &word, const QString &language) const
+{
+    const auto score = [this](const QString &text) {
+        return m_englishFrequencies.isEmpty() ? englishPrior().value(text)
+            : std::max(0, (m_englishFrequencies.value(text) - 245) / 2);
+    };
+    if (language == u"en-GB") {
+        static const auto american = [] {
+            QHash<QString, QString> result;
+            const auto &forms = britishSpellings();
+            for (auto it = forms.cbegin(); it != forms.cend(); ++it)
+                result.insert(it.value(), it.key());
+            return result;
+        }();
+        const auto preferred = american.constFind(word);
+        if (preferred != american.cend())
+            return std::max(score(word), score(preferred.value())) + 36;
+    }
+    return score(word) + (language == u"en-US" && britishSpellings().contains(word) ? 28 : 0);
 }
 
 const QList<KeyboardLexicon::IndexEntry> &KeyboardLexicon::index(const QString &mode)
@@ -458,8 +532,14 @@ const QList<KeyboardLexicon::IndexEntry> &KeyboardLexicon::index(const QString &
         if (!encoded.code.isEmpty())
             entries.append({std::move(encoded.code), encoded.boundaries, i});
     }
-    std::sort(entries.begin(), entries.end(), [](const IndexEntry &a, const IndexEntry &b) {
-        return a.code < b.code;
+    std::sort(entries.begin(), entries.end(), [this](const IndexEntry &a, const IndexEntry &b) {
+        if (a.code != b.code)
+            return a.code < b.code;
+        const auto &lhs = m_chinese.at(a.word);
+        const auto &rhs = m_chinese.at(b.word);
+        if (lhs.score != rhs.score)
+            return lhs.score > rhs.score;
+        return std::tie(lhs.text, lhs.spelling) < std::tie(rhs.text, rhs.spelling);
     });
     return m_indices.insert(mode, std::move(entries)).value();
 }
@@ -587,7 +667,8 @@ QList<KeyboardCandidate> KeyboardLexicon::chineseCandidates(const KeyboardQuery 
                 const auto &head = words.at(n);
                 for (const auto &tail : paths.at(end)) {
                     const int score = tail.text.isEmpty() ? head.score
-                        : head.score / 2 + tail.score / 2 - 48;
+                        : head.score + tail.score - segmentBoundaryCost
+                            + m_boundaryScores.value(pairKey(head.text.back(), tail.text.front()));
                     paths[start].append({head.text + tail.text,
                                          tail.code.isEmpty() ? head.code : head.code + u' ' + tail.code,
                                          tail.consumed, score});
@@ -644,7 +725,7 @@ QList<KeyboardCandidate> KeyboardLexicon::chineseCandidates(const KeyboardQuery 
         }
         result.append({entry.text, entry.code, query.input.size(), base + boost});
     }
-    rank(result, maxResults);
+    rank(result, maxResults, query.input.size());
     return result;
 }
 
@@ -662,37 +743,67 @@ QList<KeyboardCandidate> KeyboardLexicon::englishCandidates(const KeyboardQuery 
             result.append({display, query.input.toLower(), query.input.size(), score, correction});
     };
     const auto first = std::lower_bound(m_english.cbegin(), m_english.cend(), prefix);
-    for (auto i = first; i != m_english.cend() && i->startsWith(prefix); ++i)
-        add(*i, 570 + englishScore(*i, query.language) - int(i->size() - prefix.size()) * 13);
+    int bestCompletionFrequency = 0;
+    for (auto i = first; i != m_english.cend() && i->startsWith(prefix); ++i) {
+        if (i->size() > prefix.size())
+            bestCompletionFrequency = std::max(bestCompletionFrequency, m_englishFrequencies.value(*i));
+        add(*i, 560 + englishScore(*i, query.language) - int(i->size() - prefix.size()) * 8);
+    }
 
     if (query.language == u"en-GB") {
         const QString preferred = britishSpellings().value(prefix);
         if (!preferred.isEmpty())
-            add(preferred, 750, true);
+            add(preferred, 590 + englishScore(preferred, query.language), true);
     }
 
-    if (prefix.size() >= 3 && prefix.size() <= 24 && !std::binary_search(m_english.cbegin(),
-                                                                       m_english.cend(), prefix)) {
-        QSet<QString> alterations;
+    const int typedFrequency = m_englishFrequencies.value(prefix);
+    const bool correctable = m_englishFrequencies.isEmpty()
+        ? !std::binary_search(m_english.cbegin(), m_english.cend(), prefix) : typedFrequency < 390;
+    if (prefix.size() >= 3 && prefix.size() <= 24 && correctable) {
+        const int completionPriority = bestCompletionFrequency >= 420 ? 88 : 0;
+        QHash<QString, int> alterations;
+        const auto propose = [&alterations, &prefix](QString word, int cost) {
+            if (word != prefix) {
+                auto it = alterations.find(word);
+                if (it == alterations.end())
+                    alterations.insert(std::move(word), cost);
+                else
+                    it.value() = std::min(it.value(), cost);
+            }
+        };
         for (qsizetype i = 0; i <= prefix.size(); ++i) {
-            if (i < prefix.size())
-                alterations.insert(QString(prefix).remove(i, 1));
+            if (i < prefix.size()) {
+                const bool repeated = (i > 0 && prefix.at(i) == prefix.at(i - 1))
+                    || (i + 1 < prefix.size() && prefix.at(i) == prefix.at(i + 1));
+                propose(QString(prefix).remove(i, 1), repeated ? 18 : 30);
+            }
             if (i + 1 < prefix.size()) {
                 QString swapped = prefix;
-                const QChar first = swapped.at(i);
+                const QChar left = swapped.at(i);
                 swapped[i] = swapped.at(i + 1);
-                swapped[i + 1] = first;
-                alterations.insert(swapped);
+                swapped[i + 1] = left;
+                const QPointF delta = keyPosition(left) - keyPosition(swapped.at(i));
+                const int cost = (delta.x() * delta.x() + delta.y() * delta.y()) < 2.56 ? 13 : 34;
+                propose(std::move(swapped), cost);
             }
             for (QChar letter = u'a'; letter <= u'z'; letter = QChar(letter.unicode() + 1)) {
-                alterations.insert(QString(prefix).insert(i, letter));
-                if (i < prefix.size())
-                    alterations.insert(QString(prefix).replace(i, 1, letter));
+                const bool repeated = (i > 0 && prefix.at(i - 1) == letter)
+                    || (i < prefix.size() && prefix.at(i) == letter);
+                propose(QString(prefix).insert(i, letter), repeated ? 20 : 32);
+                if (i < prefix.size()) {
+                    const QPointF delta = keyPosition(prefix.at(i)) - keyPosition(letter);
+                    const int cost = (delta.x() * delta.x() + delta.y() * delta.y()) < 2.56 ? 22 : 49;
+                    propose(QString(prefix).replace(i, 1, letter), cost);
+                }
             }
         }
-        for (const QString &word : alterations) {
-            if (std::binary_search(m_english.cbegin(), m_english.cend(), word))
-                add(word, 500 + englishScore(word, query.language), true);
+        for (auto i = alterations.cbegin(); i != alterations.cend(); ++i) {
+            const auto &word = i.key();
+            const bool plausible = m_englishFrequencies.isEmpty()
+                ? std::binary_search(m_english.cbegin(), m_english.cend(), word)
+                : m_englishFrequencies.value(word) >= std::max(320, typedFrequency + 45);
+            if (plausible)
+                add(word, 555 + englishScore(word, query.language) - i.value() - completionPriority, true);
         }
     }
 

@@ -4,6 +4,7 @@
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QUrl>
 #include <QtQml/qqmlregistration.h>
 
 #include <memory>
@@ -21,12 +22,16 @@ public:
     ~VoiceRecognizer() override;
 
     bool available() const;
+    bool decoderAvailable() const;
     bool listening() const { return m_phase == Recording; }
     bool busy() const { return m_phase != Idle; }
 
     Q_INVOKABLE void start(const QString &sessionToken);
     Q_INVOKABLE void stop();
     Q_INVOKABLE void cancel();
+
+    // Decode an explicitly selected local PCM file without opening the microphone.
+    void decodeFile(const QUrl &audioFile, const QString &sessionToken);
 
 signals:
     void stateChanged();
@@ -37,8 +42,9 @@ private:
     enum Phase { Idle, Recording, Recognizing, Cancelling };
 
     void finished(int exitCode, QProcess::ExitStatus exitStatus);
+    bool prepareAudio(const QString &sessionToken);
     void decode();
-    void reset();
+    quint64 reset();
     void setPhase(Phase phase);
 
     QString m_runtimeRoot;
@@ -52,6 +58,7 @@ private:
     std::unique_ptr<QTemporaryDir> m_audio;
     QProcess m_process;
     QTimer m_timeout;
+    quint64 m_generation = 0;
     Phase m_phase = Idle;
     bool m_stopped = false;
 };

@@ -43,6 +43,8 @@ class PackTests : public QObject
 private slots:
     void validatesImportAndRollback();
     void managerExposesVerifiedSnapshot();
+    void recoversVerifiedPreviousVersionOnRestart();
+    void stopsExposingExpiredEntries();
     void updatesOverHttps();
 };
 
@@ -127,8 +129,55 @@ void PackTests::managerExposesVerifiedSnapshot()
     QCOMPARE(manager.entries().size(), 1);
 }
 
+void PackTests::recoversVerifiedPreviousVersionOnRestart()
+{
+    QTemporaryDir installed;
+    QVERIFY(installed.isValid());
+    const auto input = fixtures();
+    const Config config{installed.path(), QStringLiteral("test-zh"), {{"test-1", publicKey()}}};
+    QVERIFY(importDirectory(config, input.filePath(QStringLiteral("first"))).error.isEmpty());
+    QVERIFY(importDirectory(config, input.filePath(QStringLiteral("second"))).error.isEmpty());
+
+    QFile damaged(QDir(installed.path()).filePath(QStringLiteral("test-zh/v2.pack")));
+    QVERIFY(damaged.open(QIODevice::Append));
+    QVERIFY(damaged.write("damaged") > 0);
+    damaged.close();
+
+    LexiconPackManager restarted;
+    configureManager(restarted, installed.path());
+    QTRY_VERIFY_WITH_TIMEOUT(!restarted.busy(), 3000);
+    QVERIFY(!restarted.enabled());
+    QCOMPARE(restarted.activeVersion(), 1);
+    QCOMPARE(restarted.previousVersion(), 0);
+    QCOMPARE(restarted.entries().size(), 1);
+    QCOMPARE(load(config).highest, 2);
+    QVERIFY(!importDirectory(config, input.filePath(QStringLiteral("second"))).error.isEmpty());
+}
+
+void PackTests::stopsExposingExpiredEntries()
+{
+    QTemporaryDir installed;
+    QVERIFY(installed.isValid());
+    LexiconPackManager manager;
+    configureManager(manager, installed.path());
+    QTRY_VERIFY_WITH_TIMEOUT(!manager.busy(), 3000);
+    manager.importDirectory(QUrl::fromLocalFile(fixtures().filePath(QStringLiteral("expiring-entry"))));
+    QTRY_COMPARE_WITH_TIMEOUT(manager.activeVersion(), 3, 3000);
+    QCOMPARE(manager.entries().size(), 1);
+    QTRY_VERIFY_WITH_TIMEOUT(manager.entries().isEmpty(), 15000);
+    QCOMPARE(manager.activeVersion(), 3);
+    QVERIFY(!manager.enabled());
+
+    LexiconPackManager restarted;
+    configureManager(restarted, installed.path());
+    QTRY_COMPARE_WITH_TIMEOUT(restarted.activeVersion(), 3, 3000);
+    QVERIFY(restarted.entries().isEmpty());
+}
+
 void PackTests::updatesOverHttps()
 {
+    if (qEnvironmentVariableIsEmpty("VELORA_PACK_TEST_URL"))
+        QSKIP("The local HTTPS fixture server is not configured");
     QVERIFY(QSslSocket::supportsSsl());
     const auto ca = QSslCertificate::fromPath(fixtures().filePath(QStringLiteral("tls.crt")));
     QCOMPARE(ca.size(), 1);
@@ -141,9 +190,14 @@ void PackTests::updatesOverHttps()
     LexiconPackManager manager;
     configureManager(manager, installed.path());
     const QUrl origin(qEnvironmentVariable("VELORA_PACK_TEST_URL"));
-    manager.setManifestUrl(origin.resolved(QUrl("first/manifest.json")));
+    manager.setManifestUrl(origin.resolved(QUrl("offline-disabled/manifest.json")));
     QTRY_VERIFY_WITH_TIMEOUT(!manager.busy(), 3000);
     QCOMPARE(manager.activeVersion(), 0);
+    QVERIFY(!manager.enabled());
+    manager.checkForUpdates();
+    QTest::qWait(200);
+    QVERIFY(!manager.busy());
+    manager.setManifestUrl(origin.resolved(QUrl("first/manifest.json")));
     manager.setEnabled(true);
     QTRY_COMPARE_WITH_TIMEOUT(manager.activeVersion(), 1, 10'000);
     QCOMPARE(manager.entries().size(), 1);
@@ -166,6 +220,14 @@ void PackTests::updatesOverHttps()
     manager.setManifestUrl(origin.resolved(QUrl("second/manifest.json")));
     QTRY_COMPARE_WITH_TIMEOUT(manager.activeVersion(), 2, 3000);
     QCOMPARE(manager.previousVersion(), 1);
+    manager.setEnabled(false);
+
+    LexiconPackManager offline;
+    configureManager(offline, installed.path());
+    offline.setManifestUrl(origin.resolved(QUrl("offline-disabled/manifest.json")));
+    QTRY_COMPARE_WITH_TIMEOUT(offline.activeVersion(), 2, 3000);
+    QCOMPARE(offline.entries().size(), 1);
+    QVERIFY(!offline.enabled());
 }
 
 QTEST_GUILESS_MAIN(PackTests)

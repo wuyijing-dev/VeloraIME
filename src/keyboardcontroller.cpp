@@ -49,11 +49,17 @@ KeyboardController::KeyboardController(QObject *parent)
     connect(qGuiApp, &QGuiApplication::focusObjectChanged, this, &KeyboardController::trackFocus);
     m_clipboardTimer.setInterval(60 * 1000);
     connect(&m_clipboardTimer, &QTimer::timeout, this, &KeyboardController::pruneClipboard);
+    m_defaultCommitTimer.setSingleShot(true);
+    // A first lookup can sit behind cold dictionary and profile initialization.
+    // Normal confirmations resolve as soon as their exact lookup completes.
+    m_defaultCommitTimer.setInterval(8000);
+    connect(&m_defaultCommitTimer, &QTimer::timeout, this, &KeyboardController::finishDefaultCommit);
     trackFocus();
 }
 
 KeyboardController::~KeyboardController()
 {
+    cancelDeferredKeys();
     clearComposition(true);
     QMetaObject::invokeMethod(m_lexicon, [] {}, Qt::BlockingQueuedConnection);
     m_workerThread.quit();
@@ -310,6 +316,7 @@ void KeyboardController::trackFocus()
 
 void KeyboardController::advanceSession()
 {
+    cancelDeferredKeys();
     ++m_session;
     const quint64 value = m_session;
     QMetaObject::invokeMethod(this, [this, value] {
@@ -367,10 +374,8 @@ void KeyboardController::setFocusObject(QObject *focus)
 
 void KeyboardController::cancelAfterExternalEdit()
 {
-    if (!m_sending) {
-        clearComposition(true);
-        clearUndo();
-    }
+    if (!m_sending)
+        cancelComposition();
 }
 
 QVariant KeyboardController::query(Qt::InputMethodQuery property) const
@@ -410,7 +415,9 @@ void KeyboardController::refreshField()
         && m_enter == enter && m_hints == hints)
         return;
 
-    if (m_active != active || m_sensitive != privacy || m_mode != mode || m_hints != hints)
+    const bool invalidatesSession = m_active != active || m_sensitive != privacy || m_mode != mode || m_hints != hints;
+    const bool pendingConfirmation = m_defaultCommit.has_value();
+    if (invalidatesSession)
         advanceSession();
     const bool privacyChanged = m_sensitive != privacy;
     m_active = active;
@@ -418,7 +425,7 @@ void KeyboardController::refreshField()
     m_mode = mode;
     m_hints = hints;
     m_enter = enter;
-    if (!canCompose()) {
+    if (!canCompose() || (invalidatesSession && pendingConfirmation)) {
         clearComposition(true);
         clearUndo();
     }
@@ -445,12 +452,12 @@ bool KeyboardController::eventFilter(QObject *watched, QEvent *event)
     case QEvent::InputMethod:
     case QEvent::MouseButtonPress:
     case QEvent::TouchBegin:
-        clearComposition(true);
-        clearUndo();
+        cancelComposition();
         break;
     case QEvent::KeyPress: {
         auto key = static_cast<QKeyEvent *>(event);
-        if (!m_raw.isEmpty() || !m_segments.isEmpty() || !m_swipePath.isEmpty()) {
+        if (!m_raw.isEmpty() || !m_segments.isEmpty() || !m_swipePath.isEmpty()
+            || m_defaultCommit || m_deliveringDefaultSession == m_session) {
             if (key->key() == Qt::Key_Escape) {
                 cancelComposition();
                 return true;
@@ -468,14 +475,18 @@ bool KeyboardController::eventFilter(QObject *watched, QEvent *event)
                     enter();
                     return true;
                 }
-                if (isPinyinInput(key->text(), m_pinyinMode == u"t9", true)) {
+                if (isPinyinInput(key->text(), m_pinyinMode == u"t9", true)
+                    || (m_defaultCommit && !key->text().isEmpty() && key->text().front().isPrint())) {
                     input(key->text());
                     return true;
                 }
             }
         }
-        clearComposition(true);
-        clearUndo();
+        if (deferKey([this, code = key->key(), modifiers = key->modifiers(), value = key->text()] {
+                sendKey(code, modifiers, value);
+            }))
+            return true;
+        cancelComposition();
         break;
     }
     default:
@@ -523,6 +534,8 @@ void KeyboardController::input(const QString &text)
     refreshField();
     if (!m_active || text.isEmpty())
         return;
+    if (deferKey([this, text] { input(text); }))
+        return;
     const auto session = m_session;
     clearUndo();
     if (session != m_session)
@@ -556,21 +569,20 @@ void KeyboardController::inputDirect(const QString &text)
     refreshField();
     if (!m_active || text.isEmpty())
         return;
+    if (deferKey([this, text] { inputDirect(text); }))
+        return;
     const quint64 session = m_session;
     clearUndo();
     if (session != m_session)
         return;
-    if (!m_swipePath.isEmpty()) {
-        const auto *top = m_results.isEmpty() ? nullptr : &m_results.first();
-        commitSwipe(top, asciiLetter(text.front()), false);
-    } else if (!m_raw.isEmpty() || !m_segments.isEmpty()) {
-        if (const auto *top = bestCompleteChinese())
-            commitChinese(top->text, top->code, false);
-        else
-            commitChinese(m_raw, {}, false);
-    }
-    if (session == m_session && sendCommit(restrictText(text)) && session == m_session)
-        refreshEnglish();
+    auto insertText = [this, text, session] {
+        if (session == m_session && sendCommit(restrictText(text)) && session == m_session)
+            refreshEnglish();
+    };
+    if (!m_swipePath.isEmpty() || !m_raw.isEmpty() || !m_segments.isEmpty())
+        acceptDefaultCandidate(asciiLetter(text.front()), false, std::move(insertText));
+    else
+        insertText();
 }
 
 void KeyboardController::inputSwipe(const QString &path)
@@ -578,6 +590,8 @@ void KeyboardController::inputSwipe(const QString &path)
     refreshField();
     if (!canCompose() || !m_language.startsWith(u"en-") || path.size() > 48
         || !std::all_of(path.begin(), path.end(), asciiLetter))
+        return;
+    if (deferKey([this, path] { inputSwipe(path); }))
         return;
     QString compact;
     for (QChar letter : path) {
@@ -591,18 +605,19 @@ void KeyboardController::inputSwipe(const QString &path)
     clearUndo();
     if (session != m_session)
         return;
-    if (!m_swipePath.isEmpty()) {
-        const auto *top = m_results.isEmpty() ? nullptr : &m_results.first();
-        commitSwipe(top, true, false);
-    }
-    if (session != m_session)
-        return;
-
-    m_swipePath = compact;
-    m_swipeDisplay.clear();
-    m_compositionWords = m_words;
-    m_inlinePreedit = query(Qt::ImCurrentSelection).toString().isEmpty();
-    refreshComposition();
+    auto startSwipe = [this, compact, session] {
+        if (session != m_session)
+            return;
+        m_swipePath = compact;
+        m_swipeDisplay.clear();
+        m_compositionWords = m_words;
+        m_inlinePreedit = query(Qt::ImCurrentSelection).toString().isEmpty();
+        refreshComposition();
+    };
+    if (!m_swipePath.isEmpty())
+        acceptDefaultCandidate(true, false, std::move(startSwipe));
+    else
+        startSwipe();
 }
 
 bool KeyboardController::inputLiteral(const QString &text, const QString &token)
@@ -610,6 +625,8 @@ bool KeyboardController::inputLiteral(const QString &text, const QString &token)
     refreshField();
     if (!m_active || m_sensitive || token != sessionToken() || text.isEmpty())
         return false;
+    if (deferKey([this, text, token] { inputLiteral(text, token); }))
+        return true;
     const auto session = m_session;
     clearComposition(true);
     clearUndo();
@@ -620,6 +637,8 @@ void KeyboardController::backspace()
 {
     refreshField();
     if (!m_active)
+        return;
+    if (deferKey([this] { backspace(); }))
         return;
     const auto session = m_session;
     clearUndo();
@@ -664,16 +683,10 @@ void KeyboardController::space()
     refreshField();
     if (!m_active)
         return;
-    if (!m_swipePath.isEmpty()) {
-        const auto *top = m_results.isEmpty() ? nullptr : &m_results.first();
-        commitSwipe(top, true, true);
+    if (deferKey([this] { space(); }))
         return;
-    }
-    if (!m_raw.isEmpty() || !m_segments.isEmpty()) {
-        if (const auto *top = bestCompleteChinese())
-            commitChinese(top->text, top->code, true);
-        else
-            commitChinese(m_raw, {}, false);
+    if (!m_swipePath.isEmpty() || !m_raw.isEmpty() || !m_segments.isEmpty()) {
+        acceptDefaultCandidate(true, true);
         return;
     }
     const auto session = m_session;
@@ -693,9 +706,10 @@ void KeyboardController::enter()
     refreshField();
     if (!m_active)
         return;
+    if (deferKey([this] { enter(); }))
+        return;
     if (!m_swipePath.isEmpty()) {
-        const auto *top = m_results.isEmpty() ? nullptr : &m_results.first();
-        commitSwipe(top, false, true);
+        acceptDefaultCandidate(false, true);
         return;
     }
     if (!m_raw.isEmpty() || !m_segments.isEmpty()) {
@@ -730,6 +744,8 @@ void KeyboardController::moveCursor(int delta)
     refreshField();
     if (!m_active || delta == 0)
         return;
+    if (deferKey([this, delta] { moveCursor(delta); }))
+        return;
     const auto session = m_session;
     clearComposition(true);
     clearUndo();
@@ -743,6 +759,8 @@ void KeyboardController::selectCandidate(const QString &id)
 {
     refreshField();
     if (!canCompose())
+        return;
+    if (deferKey([this, id] { selectCandidate(id); }))
         return;
     const auto candidate = std::find_if(m_candidates.cbegin(), m_candidates.cend(), [&id](const QVariant &value) {
         return value.toMap().value(u"id"_s).toString() == id;
@@ -835,9 +853,72 @@ bool KeyboardController::commitSwipe(const KeyboardCandidate *candidate, bool ad
     return sent;
 }
 
+void KeyboardController::acceptDefaultCandidate(bool addSwipeSpace, bool learn,
+                                                std::function<void()> followUp)
+{
+    m_defaultCommit = DefaultCommit{m_session, m_generation, addSwipeSpace, learn, std::move(followUp)};
+    if (m_candidateLookupPending)
+        m_defaultCommitTimer.start();
+    else
+        finishDefaultCommit();
+}
+
+void KeyboardController::commitDefaultCandidate(bool addSwipeSpace, bool learn)
+{
+    if (!m_swipePath.isEmpty()) {
+        const auto *candidate = m_results.isEmpty() ? nullptr : &m_results.first();
+        commitSwipe(candidate, addSwipeSpace, learn);
+    } else if (const auto *candidate = bestCompleteChinese()) {
+        commitChinese(candidate->text, candidate->code, learn);
+    } else {
+        commitChinese(m_raw, {}, false);
+    }
+}
+
+void KeyboardController::finishDefaultCommit()
+{
+    if (!m_defaultCommit)
+        return;
+    const DefaultCommit request = std::move(*m_defaultCommit);
+    m_defaultCommit.reset();
+    m_defaultCommitTimer.stop();
+    if (request.session != m_session || request.generation != m_generation || !canCompose()) {
+        cancelComposition();
+        return;
+    }
+    {
+        // Reentrant edits during the host commit join the same queue.
+        QScopedValueRollback guard(m_deliveringDefaultSession, std::optional{request.session});
+        const auto epoch = m_deferredEpoch;
+        commitDefaultCandidate(request.addSwipeSpace, request.learn);
+        if (request.followUp && request.session == m_session && epoch == m_deferredEpoch)
+            request.followUp();
+    }
+    while (request.session == m_session && !m_defaultCommit && !m_deferredKeys.isEmpty())
+        m_deferredKeys.dequeue()();
+}
+
+bool KeyboardController::deferKey(std::function<void()> action)
+{
+    if (!m_defaultCommit && m_deliveringDefaultSession != m_session)
+        return false;
+    m_deferredKeys.enqueue(std::move(action));
+    return true;
+}
+
+void KeyboardController::cancelDeferredKeys()
+{
+    ++m_deferredEpoch;
+    m_defaultCommit.reset();
+    m_defaultCommitTimer.stop();
+    m_deferredKeys.clear();
+}
+
 void KeyboardController::undoCandidate()
 {
     refreshField();
+    if (deferKey([this] { undoCandidate(); }))
+        return;
     if (!canCompose() || !canUndoCandidate() || !query(Qt::ImCurrentSelection).toString().isEmpty()
         || query(Qt::ImCursorPosition).toInt() != m_undo.cursor
         || !precedingText().endsWith(m_undo.text)) {
@@ -872,6 +953,7 @@ void KeyboardController::undoCandidate()
 
 void KeyboardController::cancelComposition()
 {
+    cancelDeferredKeys();
     clearComposition(true);
     clearUndo();
 }
@@ -908,6 +990,7 @@ void KeyboardController::refreshComposition()
 void KeyboardController::clearCandidates()
 {
     ++m_generation;
+    m_candidateLookupPending = false;
     m_results.clear();
     if (m_candidates.isEmpty())
         return;
@@ -1070,11 +1153,14 @@ void KeyboardController::clearUndo()
 
 void KeyboardController::requestCandidates(const QString &text)
 {
+    if (m_defaultCommit)
+        return;
     const QString current = text;
     clearCandidates();
     const quint64 generation = m_generation;
     if (current.isEmpty() || !canCompose())
         return;
+    m_candidateLookupPending = true;
     const bool swipe = !m_swipePath.isEmpty();
     const auto &entries = m_language.startsWith(u"zh") || swipe ? m_compositionWords : m_words;
     const KeyboardQuery data{current, m_language, m_pinyinMode, m_profile,
@@ -1088,7 +1174,12 @@ void KeyboardController::requestCandidates(const QString &text)
         QMetaObject::invokeMethod(this, [this, generation, candidates = std::move(candidates)] {
             if (m_generation != generation || !canCompose())
                 return;
+            m_candidateLookupPending = false;
             m_results = candidates;
+            if (m_defaultCommit) {
+                finishDefaultCommit();
+                return;
+            }
             if (!m_swipePath.isEmpty() && !candidates.isEmpty()) {
                 m_swipeDisplay = candidates.first().text;
                 if (m_inlinePreedit)
@@ -1198,6 +1289,8 @@ void KeyboardController::sendClipboardKey(int key)
     refreshField();
     if (!m_active || m_sensitive || m_hints.testFlag(Qt::ImhNoEditMenu))
         return;
+    if (deferKey([this, key] { sendClipboardKey(key); }))
+        return;
     const quint64 session = m_session;
     const QString copied = (key == Qt::Key_C || key == Qt::Key_X)
         && m_clipboardHistoryEnabled ? query(Qt::ImCurrentSelection).toString() : QString();
@@ -1250,6 +1343,8 @@ void KeyboardController::pasteHistory(int index)
     if (!m_active || m_sensitive || !m_clipboardHistoryEnabled
         || m_hints.testFlag(Qt::ImhNoEditMenu) || index < 0 || index >= m_clipboard.size())
         return;
+    if (deferKey([this, index] { pasteHistory(index); }))
+        return;
     pruneClipboard();
     if (index >= m_clipboard.size())
         return;
@@ -1276,6 +1371,8 @@ void KeyboardController::requestRecentEmoji()
 
 void KeyboardController::recordEmoji(const QString &emoji)
 {
+    if (deferKey([this, emoji] { recordEmoji(emoji); }))
+        return;
     if (!canCompose() || emoji.isEmpty() || emoji.size() > 24 || !precedingText().endsWith(emoji))
         return;
     bool hasSymbol = false;

@@ -1,9 +1,13 @@
 #include "keyboardcontroller.h"
 
+#include <QElapsedTimer>
 #include <QFile>
+#include <QMap>
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickItem>
+#include <QScopeGuard>
+#include <QSemaphore>
 #include <QSet>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -11,6 +15,7 @@
 #include <QTest>
 #include <QUuid>
 
+#include <algorithm>
 #include <memory>
 
 using namespace Qt::StringLiterals;
@@ -96,6 +101,9 @@ private slots:
     void nativeEditingAndLimits();
     void cancelOnFocusOrHide();
     void pinyinModes();
+    void rapidPinyinConfirmation();
+    void pinyinConfirmationTimeout();
+    void candidateRankingCorpus();
     void liveCandidateAndPinPresentation();
     void privacyAndClipboard();
     void profileAndSupplementalPacks();
@@ -297,6 +305,169 @@ void EngineIntegration::pinyinModes()
     QTRY_VERIFY(!findCandidate(key, u"中"_s).isEmpty());
 }
 
+void EngineIntegration::rapidPinyinConfirmation()
+{
+    auto first = editor(*m_window, "first");
+    auto second = editor(*m_window, "second");
+    auto &key = *m_controller;
+    key.setLanguage(u"zh-CN"_s);
+
+    const auto typePinyin = [&key](const QString &letters) {
+        for (const QChar letter : letters)
+            key.input(QString(letter));
+    };
+    typePinyin(u"nihao"_s);
+    QCOMPARE(key.preedit(), u"nihao"_s);
+    QVERIFY(key.candidates().isEmpty());
+    key.space();
+    typePinyin(u"shijie"_s);
+    key.space();
+    QCOMPARE(first->property("text").toString(), QString());
+    QTRY_COMPARE_WITH_TIMEOUT(first->property("text").toString(), u"你好世界"_s, 15000);
+    QVERIFY(key.preedit().isEmpty());
+
+    first->setProperty("text", QString());
+    for (int i = 0; i < 44; ++i) {
+        typePinyin(u"nihao"_s);
+        key.space();
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(first->property("text").toString(), (u"你好"_s).repeated(44), 15000);
+    QVERIFY(key.preedit().isEmpty());
+
+    first->setProperty("text", QString());
+    typePinyin(u"nihao"_s);
+    QVERIFY(key.candidates().isEmpty());
+    key.inputDirect(u"。"_s);
+    typePinyin(u"shijie"_s);
+    key.space();
+    QTRY_COMPARE(first->property("text").toString(), u"你好。世界"_s);
+
+    first->setProperty("text", QString());
+    typePinyin(u"nihao"_s);
+    QTRY_VERIFY(!findCandidate(key, u"你好"_s).isEmpty());
+    bool closeFollowUp = false;
+    const auto connection = connect(&key, &KeyboardController::preeditChanged, &key, [&] {
+        if (closeFollowUp || !key.preedit().isEmpty())
+            return;
+        closeFollowUp = true;
+        typePinyin(u"shijie"_s);
+        key.space();
+    });
+    key.inputDirect(u"。"_s);
+    disconnect(connection);
+    QVERIFY(closeFollowUp);
+    QTRY_COMPARE(first->property("text").toString(), u"你好。世界"_s);
+
+    first->setProperty("text", QString());
+    typePinyin(u"qqqqqqqq"_s);
+    QVERIFY(key.candidates().isEmpty());
+    key.space();
+    typePinyin(u"nihao"_s);
+    key.space();
+    QTRY_COMPARE(first->property("text").toString(), u"qqqqqqqq你好"_s);
+
+    first->setProperty("text", QString());
+    typePinyin(u"nihao"_s);
+    key.space();
+    typePinyin(u"shijie"_s);
+    key.space();
+    second->forceActiveFocus();
+    typePinyin(u"zhongguo"_s);
+    key.space();
+    QTRY_COMPARE(second->property("text").toString(), u"中国"_s);
+    QCOMPARE(first->property("text").toString(), QString());
+}
+
+void EngineIntegration::pinyinConfirmationTimeout()
+{
+    auto first = editor(*m_window, "first");
+    auto &key = *m_controller;
+    key.setLanguage(u"zh-CN"_s);
+    key.m_defaultCommitTimer.setInterval(35);
+    const auto gate = std::make_shared<QSemaphore>();
+    auto unblock = qScopeGuard([gate] { gate->release(); });
+    QVERIFY(QMetaObject::invokeMethod(key.m_lexicon, [gate] { gate->acquire(); }, Qt::QueuedConnection));
+
+    key.input(u"nihao"_s);
+    QVERIFY(key.candidates().isEmpty());
+    key.space();
+    key.inputDirect(u"。"_s);
+    QCOMPARE(first->property("text").toString(), QString());
+    QTRY_COMPARE(first->property("text").toString(), u"nihao。"_s);
+    QVERIFY(key.preedit().isEmpty());
+
+    gate->release();
+    unblock.dismiss();
+    key.m_defaultCommitTimer.setInterval(8000);
+    key.input(u"shijie"_s);
+    key.space();
+    QTRY_COMPARE_WITH_TIMEOUT(first->property("text").toString(), u"nihao。世界"_s, 10000);
+}
+
+void EngineIntegration::candidateRankingCorpus()
+{
+    QFile corpus(QFINDTESTDATA("data/candidate-quality.tsv"));
+    QVERIFY(corpus.open(QIODevice::ReadOnly));
+    KeyboardLexicon lexicon;
+    struct Result {
+        int total = 0;
+        int topOne = 0;
+        int topThree = 0;
+        QList<qint64> latencyUs;
+    };
+    QMap<QString, Result> totals;
+    while (!corpus.atEnd()) {
+        const QString line = QString::fromUtf8(corpus.readLine()).trimmed();
+        if (line.isEmpty() || line.startsWith(u'#'))
+            continue;
+        const auto fields = line.split(u'\t');
+        QCOMPARE(fields.size(), 5);
+        const auto &group = fields[0];
+        const auto &locale = fields[1];
+        const auto &mode = fields[2];
+        const auto &input = fields[3];
+        const auto &expected = fields[4];
+        lexicon.warm(locale, mode);
+        QElapsedTimer timer;
+        timer.start();
+        const auto rows = lexicon.candidates({input, locale, mode, u"candidate-quality-reference"_s,
+                                              {}, false, false, false});
+        auto &result = totals[group];
+        result.latencyUs.append(timer.nsecsElapsed() / 1000);
+        ++result.total;
+        const auto candidate = std::find_if(rows.cbegin(), rows.cend(), [&](const auto &value) {
+            return value.text == expected && value.consumed == input.size();
+        });
+        if (candidate == rows.cend()) {
+            qWarning().noquote() << group << input << "missing" << expected;
+            continue;
+        }
+        const auto position = candidate - rows.cbegin();
+        result.topOne += position == 0;
+        result.topThree += position < 3;
+        if (position >= 3)
+            qWarning().noquote() << group << input << expected << "rank" << position + 1;
+        if (group == u"completion" || group == u"correction")
+            QCOMPARE(candidate->correction, group == u"correction");
+    }
+
+    QCOMPARE(totals.size(), 4);
+    const QMap<QString, int> minimumTopOne{{u"word"_s, 27}, {u"sentence"_s, 5},
+                                           {u"completion"_s, 11}, {u"correction"_s, 10}};
+    const QMap<QString, int> expectedCount{{u"word"_s, 28}, {u"sentence"_s, 7},
+                                         {u"completion"_s, 14}, {u"correction"_s, 12}};
+    for (auto it = totals.begin(); it != totals.end(); ++it) {
+        auto &result = it.value();
+        std::sort(result.latencyUs.begin(), result.latencyUs.end());
+        const auto p95 = result.latencyUs.at((result.latencyUs.size() * 95 + 99) / 100 - 1);
+        qInfo().noquote() << it.key() << "Top-1" << result.topOne << "Top-3" << result.topThree
+                          << "total" << result.total << "warm P95 (µs)" << p95;
+        QCOMPARE(result.total, expectedCount.value(it.key()));
+        QCOMPARE(result.topThree, result.total);
+        QVERIFY(result.topOne >= minimumTopOne.value(it.key()));
+    }
+}
+
 void EngineIntegration::liveCandidateAndPinPresentation()
 {
     auto first = editor(*m_window, "first");
@@ -419,6 +590,7 @@ void EngineIntegration::profileAndSupplementalPacks()
     key.input(u"nihao"_s);
     QTRY_VERIFY(!findCandidate(key, u"包内词"_s).isEmpty());
     QVERIFY(!findCandidate(key, u"我的自定义词"_s).isEmpty());
+    QCOMPARE(key.candidates().first().toMap().value(u"text"_s).toString(), u"我的自定义词"_s);
     key.selectCandidate(findCandidate(key, u"包内词"_s));
 
     QTemporaryDir directory;

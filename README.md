@@ -85,6 +85,9 @@ bash tools/rk3568/deploy_adb.sh build/stage-rk3568 ADB_SERIAL
 
 - [开发约定](AGENTS.md)
 - [架构、词库与隐私](docs/architecture.md)
+- [独立 Qt Quick 宿主集成](docs/integration.md)
+- [RK3568 输入验收](docs/board-acceptance.md)
 - [加密词库同步](docs/dictionary-sync.md)
+- [离线识别与词包验证](docs/recognition-qa.md)
 - [Liquid Glass 设计规范](docs/liquid-glass.md)
 - [迭代路线与验收](docs/roadmap.md)

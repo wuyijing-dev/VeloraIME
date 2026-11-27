@@ -22,11 +22,16 @@ PUBLISHER = Path(__file__).resolve().parents[1] / "publish.py"
 
 class Publisher(SimpleHTTPRequestHandler):
     etag_hits = 0
+    unexpected_requests = []
 
     def log_message(self, fmt, *args):
         pass
 
     def do_GET(self):
+        if (self.path.startswith("/offline-disabled/") or "?" in self.path
+                or self.headers.get("Cookie") or self.headers.get("Authorization")
+                or self.headers.get("User-Agent") != "VeloraIME-Pack/1"):
+            type(self).unexpected_requests.append(self.path)
         if self.path.endswith("/manifest.json"):
             path = Path(self.translate_path(self.path))
             if path.is_file():
@@ -39,6 +44,7 @@ class Publisher(SimpleHTTPRequestHandler):
                     return
                 self.send_response(200)
                 self.send_header("ETag", etag)
+                self.send_header("Set-Cookie", "fixture=ignore; Path=/; Secure")
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
@@ -95,8 +101,8 @@ def create_fixtures(root):
     now = datetime.now(timezone.utc).replace(microsecond=0)
     verify_reviewed_trends(root, now)
 
-    def pack(directory, version, publication=now, *extra):
-        run(sys.executable, PUBLISHER, "--entries", source, "--key", root / "private.pem",
+    def pack(directory, version, publication=now, *extra, entries=source):
+        run(sys.executable, PUBLISHER, "--entries", entries, "--key", root / "private.pem",
             "--key-id", "test-1", "--pack-id", "test-zh", "--kind", "hotwords",
             "--version", str(version), "--output", root / directory, "--valid-days", "1",
             "--published-at", publication.isoformat(), *extra)
@@ -108,6 +114,11 @@ def create_fixtures(root):
     pack("expired", 3, now - timedelta(days=2))
     pack("future", 3, now + timedelta(days=2))
     pack("bad-version-range", 3, now, "--min-client", "2", "--max-client", "3")
+    expiring = root / "entry-expiry.json"
+    expiry = now + timedelta(seconds=12)
+    expiring.write_text(json.dumps([{"text": "热词", "pinyin": "reci", "weight": 20,
+                                     "expiresAt": expiry.isoformat()}]), encoding="utf-8")
+    pack("expiring-entry", 3, entries=expiring)
     shutil.copytree(root / "invalid-digest", root / "oversize")
     manifest = root / "invalid-signature" / "manifest.json"
     document = json.loads(manifest.read_bytes())
@@ -119,12 +130,23 @@ def create_fixtures(root):
     altered.write_bytes(altered.read_bytes().replace(b"velora", b"errorx"))
     (root / "oversize" / "pack-3.json").write_bytes(b"x" * (2 * 1024 * 1024 + 1))
 
-    offline_only = ("private.pem", "entries.json", "review.json", "reviewed.json")
+    offline_only = ("private.pem", "entries.json", "entry-expiry.json", "review.json", "reviewed.json")
     for name in offline_only:
         (root / name).unlink()
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--fixtures-only":
+        root = Path(sys.argv[2])
+        root.mkdir(parents=True, exist_ok=True)
+        if any(root.iterdir()):
+            raise ValueError("Choose an empty fixture directory")
+        create_fixtures(root)
+        print(root)
+        return
+    if len(sys.argv) != 2:
+        raise ValueError("Supply a test binary or --fixtures-only DIRECTORY")
+
     with TemporaryDirectory(prefix="velora-word-packs-test-") as directory:
         root = Path(directory)
         create_fixtures(root)
@@ -148,6 +170,8 @@ def main():
                 subprocess.run([sys.argv[1]], env=env, check=True, timeout=45)
                 if Publisher.etag_hits != 1:
                     raise RuntimeError("client did not revalidate its manifest with If-None-Match")
+                if Publisher.unexpected_requests:
+                    raise RuntimeError("unexpected offline request or credentials in pack traffic")
             finally:
                 server.shutdown()
                 thread.join()
