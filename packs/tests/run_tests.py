@@ -50,12 +50,50 @@ def run(*command):
     subprocess.run(command, check=True, capture_output=True)
 
 
+def verify_reviewed_trends(root, now):
+    reviewed = root / "reviewed.json"
+    entries = [
+        {"text": "触摸板", "pinyin": "chumoban", "weight": 10, "sourceTitle": "触摸板"},
+        {"text": "键盘", "pinyin": "jianpan", "weight": 12},
+        {"text": "过期词", "pinyin": "guoqici", "weight": 99,
+         "expiresAt": (now - timedelta(days=1)).isoformat()},
+    ]
+    reviewed.write_text(json.dumps(entries), encoding="utf-8")
+    draft = root / "review.json"
+    day = now.date() - timedelta(days=2)
+    draft.write_text(json.dumps({
+        "date": day.isoformat(),
+        "source": ("https://wikimedia.org/api/rest_v1/metrics/pageviews/top/"
+                   "zh.wikipedia.org/all-access/" + day.strftime("%Y/%m/%d")),
+        "reviewRequired": True,
+        "entries": [{"title": "未经审核词", "views": 5000}, {"title": "触摸板", "views": 1000}],
+    }), encoding="utf-8")
+
+    def generate(output, trend_file):
+        run(sys.executable, PUBLISHER, "--entries", reviewed, "--key", root / "private.pem",
+            "--key-id", "test-1", "--pack-id", "test-zh", "--kind", "hotwords",
+            "--version", "1", "--output", output, "--published-at", now.isoformat(),
+            "--trend-draft", trend_file)
+        words = json.loads((output / "pack-1.json").read_bytes())
+        envelope = json.loads((output / "manifest.json").read_bytes())
+        fields = json.loads(b64decode(envelope["signed"]))
+        return {word["text"]: word["weight"] for word in words}, fields["provenance"]
+
+    weights, provenance = generate(root / "trend", draft)
+    assert weights == {"触摸板": 20, "键盘": 12}
+    assert provenance["matchedReviewedTitles"] == 1 and provenance["trendDate"] == day.isoformat()
+    fallback, provenance = generate(root / "trend-fallback", root / "missing.json")
+    assert fallback == {"触摸板": 10, "键盘": 12}
+    assert provenance["matchedReviewedTitles"] == 0 and "trendDate" not in provenance
+
+
 def create_fixtures(root):
     run("openssl", "genpkey", "-algorithm", "Ed25519", "-out", root / "private.pem")
     run("openssl", "pkey", "-in", root / "private.pem", "-pubout", "-out", root / "public.pem")
     source = root / "entries.json"
     source.write_text('[{"text":"维洛拉","pinyin":"velora","weight":10}]', encoding="utf-8")
     now = datetime.now(timezone.utc).replace(microsecond=0)
+    verify_reviewed_trends(root, now)
 
     def pack(directory, version, publication=now, *extra):
         run(sys.executable, PUBLISHER, "--entries", source, "--key", root / "private.pem",
@@ -81,7 +119,7 @@ def create_fixtures(root):
     altered.write_bytes(altered.read_bytes().replace(b"velora", b"errorx"))
     (root / "oversize" / "pack-3.json").write_bytes(b"x" * (2 * 1024 * 1024 + 1))
 
-    offline_only = ("private.pem", "entries.json")
+    offline_only = ("private.pem", "entries.json", "review.json", "reviewed.json")
     for name in offline_only:
         (root / name).unlink()
 

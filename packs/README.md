@@ -21,8 +21,10 @@ python3 packs/publish.py --entries packs/dictionary.zh-CN.json \
   --kind dictionary --version 1 --valid-days 30 --output /tmp/velora-dictionary
 ```
 
-GitHub Actions 手动运行 **Publish signed word packs**，从默认分支已审核的 JSON 构建两个数据源。使用仓库 secret `PACK_SIGNING_PRIVATE_KEY` 保存完整的未加密 Ed25519 PKCS#8 PEM，密钥 ID 为 `production-1`，发布源为 GitHub Actions。每次发布使用新的运行编号。签名发布成功后，设备可取 `https://wuyijing-dev.github.io` 下表中的路径。可将同一发布产物用于自有静态镜像或离线介质。 [GitHub Pages 工作流配置](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)
+GitHub Actions 每周或手动运行 **Publish signed word packs**，从默认分支已审核的 JSON 构建两个数据源。使用仓库 secret `PACK_SIGNING_PRIVATE_KEY` 保存完整的未加密 Ed25519 PKCS#8 PEM，密钥 ID 为 `production-1`，发布源为 GitHub Actions。每次发布使用新的运行编号。签名发布成功后，设备可取 `https://wuyijing-dev.github.io` 下表中的路径。可将同一发布产物用于自有静态镜像或离线介质。 [GitHub Pages 工作流配置](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)
 
 ## 来源与审核
 
-初始行业词和热词由项目人工整理。词表保留编辑来源，现有词条是通用词、公开产品名与技术名称。GitHub Actions 定时调用 Wikimedia Analytics API，生成 **Collect trends for editorial review** 工作流产物。维护者从草稿中核查公开性、词义、多音字和时效，填写拼音、权重和来源后更新审核词表。标题及访问量草稿保留 14 天，签发器只读取审核词表。Wikimedia 页标题和访问量的进一步使用与分发依照其 API 使用规范和对应内容条款。 [Wikimedia 趋势 API](https://doc.wikimedia.org/generated-data-platform/aqs/analytics-api/examples/project-metrics.html#most-viewed-pages) · [Wikimedia API 使用规范](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_API_Usage_Guidelines)
+初始行业词和热词由项目人工整理。词表保留编辑来源，现有词条是通用词、公开产品名与技术名称。GitHub Actions 每日调用 Wikimedia Analytics API，生成 **Collect trends for editorial review** 工作流产物。维护者从草稿中核查公开性、词义、多音字和时效，填写拼音、权重、来源，必要时加上显式期限和审核通过的来源标题 `sourceTitle`。
+
+每周发布复用最近七天的草稿，对与 `sourceTitle` 完全匹配的有效已审核词条小幅加权。没有草稿或上游故障时按原权重发布，已过期词条从新包移除。只有审核清单内的词条进入词包，草稿中的标题及访问量留在工作流产物中，保留 14 天。签名清单的 `provenance` 记录审核清单名、趋势来源和日期，以及实际匹配数。Wikimedia 页标题和访问量的使用与分发依照其 API 使用规范和对应内容条款。 [Wikimedia 趋势 API](https://doc.wikimedia.org/generated-data-platform/aqs/analytics-api/examples/project-metrics.html#most-viewed-pages) · [Wikimedia API 使用规范](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_API_Usage_Guidelines)

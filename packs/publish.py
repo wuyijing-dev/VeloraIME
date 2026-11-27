@@ -3,7 +3,7 @@
 
 import argparse
 import base64
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -11,6 +11,8 @@ import re
 import subprocess
 from tempfile import TemporaryDirectory
 import unicodedata
+
+from collect_trends import BASE_URL
 
 
 ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
@@ -35,12 +37,36 @@ def as_json(value):
                        sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def reviewed_entries(source, published_at):
+def load_trends(source, published_at):
+    if source is None:
+        return {}, {}
+    try:
+        with source.open(encoding="utf-8") as stream:
+            draft = json.loads(stream.read(128 * 1024 + 1))
+        day = date.fromisoformat(draft["date"])
+        age = (published_at.date() - day).days
+        entries = draft["entries"]
+        if (not 0 <= age <= 7 or draft.get("reviewRequired") is not True
+                or draft["source"] != BASE_URL + day.strftime("%Y/%m/%d")
+                or not isinstance(entries, list) or not 0 < len(entries) <= 100):
+            raise ValueError("expected a Wikimedia trend draft at most seven days old")
+        rank = {}
+        for index, entry in enumerate(entries):
+            if (type(entry["views"]) is int and entry["views"] > 0
+                    and isinstance(entry["title"], str)):
+                rank.setdefault(entry["title"], index)
+        return rank, {"trendSource": draft["source"], "trendDate": day.isoformat()}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}, {}
+
+
+def reviewed_entries(source, published_at, trend_rank, kind):
     values = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(values, list) or not 0 < len(values) <= MAX_ENTRIES:
         raise ValueError(f"expected between 1 and {MAX_ENTRIES} reviewed entries")
     seen = set()
     entries = []
+    matched = 0
     for index, value in enumerate(values, 1):
         if not isinstance(value, dict):
             raise ValueError(f"entry {index} must be an object")
@@ -63,10 +89,20 @@ def reviewed_entries(source, published_at):
         if "expiresAt" in value:
             expires_at = iso_date(value["expiresAt"])
             if expires_at <= published_at:
+                if kind == "hotwords":
+                    continue
                 raise ValueError(f"entry {index} expires before publication")
             entry["expiresAt"] = iso_string(expires_at)
+        # Only a reviewed title can influence its corresponding approved term.
+        source_title = value.get("sourceTitle")
+        if isinstance(source_title, str) and source_title in trend_rank:
+            bonus = max(1, 10 - trend_rank[source_title] // 5)
+            entry["weight"] = min(100, weight + bonus)
+            matched += 1
         entries.append(entry)
-    return sorted(entries, key=lambda entry: (entry["pinyin"], entry["text"]))
+    if not entries:
+        raise ValueError("the reviewed list has no unexpired entries")
+    return sorted(entries, key=lambda entry: (entry["pinyin"], entry["text"])), matched
 
 
 def sign(payload, key):
@@ -99,10 +135,14 @@ def publish(args):
         raise ValueError("invalid compatible client range")
     if not 1 <= args.valid_days <= 366:
         raise ValueError("validity must be between 1 and 366 days")
+    if args.trend_draft is not None and args.kind != "hotwords":
+        raise ValueError("trend ranking only applies to hotwords")
 
     published_at = (iso_date(args.published_at) if args.published_at
                     else datetime.now(timezone.utc).replace(microsecond=0))
-    payload = as_json(reviewed_entries(args.entries, published_at))
+    trend_rank, provenance = load_trends(args.trend_draft, published_at)
+    entries, matched = reviewed_entries(args.entries, published_at, trend_rank, args.kind)
+    payload = as_json(entries)
     if len(payload) > MAX_BYTES:
         raise ValueError(f"pack exceeds the {MAX_BYTES}-byte limit")
 
@@ -121,6 +161,11 @@ def publish(args):
         "sha256": hashlib.sha256(payload).hexdigest(),
         "url": name,
         "keyId": args.key_id,
+        "provenance": {
+            **provenance,
+            "reviewedList": args.entries.name,
+            "matchedReviewedTitles": matched,
+        },
     })
     envelope = as_json({
         "signed": base64.b64encode(manifest).decode("ascii"),
@@ -145,6 +190,8 @@ def main():
     parser.add_argument("--valid-days", type=int, default=14)
     parser.add_argument("--min-client", type=int, default=1)
     parser.add_argument("--max-client", type=int, default=1)
+    parser.add_argument("--trend-draft", type=Path,
+                        help="optional recent Wikimedia draft for reviewed hotword ranking")
     args = parser.parse_args()
     try:
         publish(args)
