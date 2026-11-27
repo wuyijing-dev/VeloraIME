@@ -1,6 +1,6 @@
 # RK3568 触摸键盘开发约定
 
-适用于整个项目。开始实现前阅读 [架构与词库](docs/architecture.md)、[Liquid Glass 设计规范](docs/liquid-glass.md) 和 [迭代路线](docs/roadmap.md)。当前交付为规划文档，实施从 M0 开始。
+适用于整个项目。开始实现前阅读 [架构与词库](docs/architecture.md)、[Liquid Glass 设计规范](docs/liquid-glass.md) 和 [迭代路线](docs/roadmap.md)。运行与部署入口见 [README](README.md)。
 
 ## 技术与范围
 
