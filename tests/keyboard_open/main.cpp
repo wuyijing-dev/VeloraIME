@@ -236,6 +236,7 @@ int main(int argc, char **argv)
         return 1;
     qputenv("XDG_DATA_HOME", QFile::encodeName(QDir(scratch.path()).filePath(u"data"_s)));
     qputenv("XDG_CONFIG_HOME", QFile::encodeName(QDir(scratch.path()).filePath(u"config"_s)));
+    qputenv("XDG_CACHE_HOME", QFile::encodeName(QDir(scratch.path()).filePath(u"cache"_s)));
     QGuiApplication app(argc, argv);
     QCoreApplication::setOrganizationName(u"VeloraIME Tests"_s);
     QCoreApplication::setApplicationName(u"Keyboard Open Probe"_s);
@@ -247,7 +248,7 @@ int main(int argc, char **argv)
     const QCommandLineOption count(u"samples"_s, u"Warm keyboard reopen samples."_s, u"count"_s, u"200"_s);
     const QCommandLineOption frames(u"frames"_s, u"Capture this many frame intervals per animated phase."_s,
                                     u"count"_s);
-    const QCommandLineOption graphics(u"graphics"_s, u"Animated probe glass mode, full or light."_s,
+    const QCommandLineOption graphics(u"graphics"_s, u"Animated probe material, full, light, or solid."_s,
                                       u"mode"_s, u"full"_s);
     const QCommandLineOption fullscreen(u"fullscreen"_s, u"Use the full current output."_s);
     arguments.addOptions({imports, count, frames, graphics, fullscreen});
@@ -257,17 +258,18 @@ int main(int argc, char **argv)
     bool valid = false;
     const auto repetitions = arguments.value(runFrames ? frames : count).toInt(&valid);
     const QDir prefix(arguments.value(imports));
+    const int graphicsValue = QStringList{u"full"_s, u"light"_s, u"solid"_s}.indexOf(graphicsMode) + 1;
     if (!arguments.isSet(imports) || !prefix.exists(u"Rk/TouchKeyboard/qmldir"_s) || !valid
         || repetitions < 1 || repetitions > 5000 || (runFrames && repetitions < 2)
-        || (graphicsMode != u"full" && graphicsMode != u"light")) {
-        qCritical("Supply an --imports directory and 1–5000 --samples or 2–5000 --frames, with full or light graphics");
+        || graphicsValue == 0) {
+        qCritical("Supply an --imports directory and 1–5000 --samples or 2–5000 --frames, with full, light, or solid graphics");
         return 2;
     }
 
     QQmlApplicationEngine engine;
     engine.addImportPath(prefix.absolutePath());
     if (runFrames)
-        engine.setInitialProperties({{u"diagnosticGraphicsMode"_s, graphicsMode == u"full" ? 1 : 2}});
+        engine.setInitialProperties({{u"diagnosticGraphicsMode"_s, graphicsValue}});
     engine.load(QUrl(runFrames ? u"qrc:/probe/FrameDiagnostic.qml"_s : u"qrc:/example/Main.qml"_s));
     if (engine.rootObjects().isEmpty())
         return 1;

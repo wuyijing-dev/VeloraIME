@@ -23,7 +23,12 @@ case "${1:-}" in
         ;;
     run)
         . /etc/profile.d/qt6.sh
+        # Qt treats the presence of QSG_NO_VSYNC as enabled, even when the SDK sets it to 0.
+        unset QSG_NO_VSYNC
         [ ! -r /etc/default/veloraime ] || . /etc/default/veloraime
+        # Reuse the startup heap across the GUI and dictionary worker on this target.
+        export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-1}"
+        export MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_:-65536}"
         scale=${VELORA_DISPLAY_SCALE:-}
         if [ -z "$scale" ]; then
             for modes in /sys/class/drm/card*-DSI-*/modes; do

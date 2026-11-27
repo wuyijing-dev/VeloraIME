@@ -62,7 +62,9 @@ restore() {
 trap restore EXIT
 "$service" stop
 . /etc/profile.d/qt6.sh
+unset QSG_NO_VSYNC
 export XDG_CONFIG_HOME="$PWD" XDG_DATA_HOME="$PWD" XDG_CACHE_HOME="$PWD"
+export MALLOC_ARENA_MAX=1 MALLOC_MMAP_THRESHOLD_=65536
 export QT_SCALE_FACTOR=2.608695652 QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough
 ./runtime /usr/share/veloraime/qml "$scenario" "$expected" "$target" >probe.log 2>&1 &
 probe=$!
