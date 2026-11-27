@@ -15,7 +15,7 @@ function letters(chinese, mode) {
     bottom.push(action("backspace", "", 1.36, "backspace"))
     const extra = mode === "email" ? textKey("@") : mode === "url" ? textKey("/") : textKey(chinese ? "、" : ",")
     const period = textKey(chinese ? "。" : ".")
-    return [top, middle, bottom, footer(chinese, extra, period, false)]
+    return [top, middle, bottom, footer(chinese, extra, period, false, mode === "email" || mode === "url")]
 }
 
 function symbols(extended, chinese, locale) {
@@ -28,10 +28,19 @@ function symbols(extended, chinese, locale) {
     bottom.push(action("backspace", "", 1.5, "backspace"))
     const extra = textKey("/")
     const period = textKey(chinese ? "。" : ".")
-    return [top, middle, bottom, footer(chinese, extra, period, true)]
+    return [top, middle, bottom, footer(chinese, extra, period, true, true)]
 }
 
-function numbers(mode) {
+function numbers(mode, secure, hasExplicitReturn) {
+    if (secure) {
+        return [
+            keys("123"),
+            keys("456"),
+            keys("789"),
+            [hasExplicitReturn ? action("enter", "", 1, "enter") : action("dismiss", "", 1, "dismiss"),
+             textKey("0"), action("backspace", "", 1, "backspace")]
+        ]
+    }
     const isPhone = mode === "phone"
     const decimal = mode === "decimal"
     const bottom = [textKey(isPhone ? "*" : (decimal ? "." : "")), textKey("0"),
@@ -71,11 +80,13 @@ function t9(digit, group) {
              "accessibleLabel": digit + " " + group, "nine": true }
 }
 
-function footer(chinese, extra, period, symbolsVisible) {
-    return [action(symbolsVisible ? "letters" : "symbol", symbolsVisible ? (chinese ? "拼音" : "ABC") : "123", 1.30),
-            action("language", "中 / EN", 1.35), extra,
-            action("space", chinese ? "空格" : "Space", 4.35),
-            period, action("enter", "", 1.55, "enter")]
+function footer(chinese, extra, period, symbolsVisible, directPunctuation) {
+    const mode = action(symbolsVisible ? "letters" : "symbol", symbolsVisible ? (chinese ? "拼音" : "ABC") : "123", 1.60)
+    const language = action("language", "中 / EN", 1.82)
+    const space = action("space", chinese ? "空格" : "Space", directPunctuation ? 3.5 : 3.92)
+    const enter = action("enter", "", 2.05, "enter")
+    return directPunctuation ? [mode, language, extra, space, period, enter]
+                             : [mode, language, space, enter]
 }
 
 const accents = {

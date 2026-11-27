@@ -6,6 +6,7 @@
 #include <QGuiApplication>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
+#include <QMetaProperty>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QScopedValueRollback>
@@ -277,6 +278,7 @@ void KeyboardController::setInputTarget(KeyboardInputTarget *target)
     m_inputTarget = target;
     if (target) {
         connect(target, &KeyboardInputTarget::stateChanged, this, &KeyboardController::refreshField);
+        connect(target, &KeyboardInputTarget::contextChanged, this, &KeyboardController::refreshExternalContext);
         connect(target, &KeyboardInputTarget::sessionChanged, this, [this] {
             advanceSession();
             clearComposition(false);
@@ -345,22 +347,20 @@ void KeyboardController::setFocusObject(QObject *focus)
             clearUndo();
             refreshField();
         });
-        const int refreshSlot = metaObject()->indexOfSlot("refreshField()");
-        for (const char *signature : {"inputMethodHintsChanged()", "readOnlyChanged(bool)",
-                                      "readOnlyChanged()", "echoModeChanged(int)",
-                                      "echoModeChanged()", "enabledChanged()"}) {
-            const int signal = focus->metaObject()->indexOfSignal(signature);
-            if (signal >= 0)
-                QObject::connect(focus, focus->metaObject()->method(signal),
-                                 this, metaObject()->method(refreshSlot));
-        }
-        const int editingSlot = metaObject()->indexOfSlot("cancelAfterExternalEdit()");
-        for (const char *signature : {"textChanged()", "cursorPositionChanged()"}) {
-            const int signal = focus->metaObject()->indexOfSignal(signature);
-            if (signal >= 0)
-                QObject::connect(focus, focus->metaObject()->method(signal),
-                                 this, metaObject()->method(editingSlot));
-        }
+        const QMetaObject *editor = focus->metaObject();
+        const auto connectNotify = [this, focus, editor](const char *propertyName, const char *slotName) {
+            const int index = editor->indexOfProperty(propertyName);
+            if (index < 0)
+                return;
+            const QMetaProperty property = editor->property(index);
+            if (property.hasNotifySignal())
+                QObject::connect(focus, property.notifySignal(), this,
+                                 metaObject()->method(metaObject()->indexOfSlot(slotName)));
+        };
+        for (const char *property : {"inputMethodHints", "readOnly", "echoMode", "enabled"})
+            connectNotify(property, "refreshField()");
+        for (const char *property : {"text", "cursorPosition"})
+            connectNotify(property, "cancelAfterExternalEdit()");
     }
     refreshField();
 }
@@ -681,15 +681,11 @@ void KeyboardController::space()
     const QString accepted = english && canCompose() && m_learningEnabled
         ? currentEnglishWord() : QString();
     const bool alreadyLearned = m_undo.learned && m_undo.text == accepted;
+    const int start = accepted.isEmpty() ? -1 : selectionStart();
     input(u" "_s);
-    if (session == m_session && !alreadyLearned && accepted.size() >= 2 && accepted.size() <= 48
-        && precedingText().endsWith(accepted + u' ')) {
-        const auto profile = m_profile;
-        const auto locale = m_language;
-        QMetaObject::invokeMethod(m_lexicon, [lexicon = m_lexicon, profile, locale, accepted] {
-            lexicon->remember(profile, locale, accepted.toLower(), accepted);
-        }, Qt::QueuedConnection);
-    }
+    if (session == m_session && !alreadyLearned && accepted.size() >= 2 && accepted.size() <= 48)
+        acceptEdit({{accepted + u' ', accepted.toLower(), {}, start < 0 ? -1 : start + 1,
+                     m_learningEnabled, accepted}, session, false, {}});
 }
 
 void KeyboardController::enter()
@@ -776,23 +772,13 @@ void KeyboardController::selectCandidate(const QString &id)
     if (original.isEmpty() || original != m_englishWord)
         return;
     const auto session = m_session;
+    const int start = selectionStart();
     if (sendCommit(choice.text, -int(original.size()), int(original.size()))
-        && session == m_session
-        && canCompose() && precedingText().endsWith(choice.text)) {
+        && session == m_session && canCompose()) {
         m_englishWord.clear();
         clearCandidates();
-        if (session != m_session)
-            return;
-        const bool learn = m_learningEnabled;
-        m_undo = {choice.text, choice.code, original, query(Qt::ImCursorPosition).toInt(), learn};
-        emit undoCandidateChanged();
-        if (learn && session == m_session) {
-            const auto profile = m_profile;
-            const auto locale = m_language;
-            QMetaObject::invokeMethod(m_lexicon, [lexicon = m_lexicon, profile, locale, choice] {
-                lexicon->remember(profile, locale, choice.code, choice.text);
-            }, Qt::QueuedConnection);
-        }
+        const int cursor = start < 0 ? -1 : start + int(choice.text.size() - original.size());
+        acceptEdit({{choice.text, choice.code, original, cursor, m_learningEnabled}, session, true, {}});
     }
 }
 
@@ -813,27 +799,15 @@ bool KeyboardController::commitChinese(const QString &text, const QString &code,
     const QString learningCode = !code.isEmpty() ? acceptedSpelling.join(u' ') : QString();
     const auto session = m_session;
     const auto extra = m_compositionWords;
+    const int start = learn ? selectionStart() : -1;
     const bool committed = sendCommit(converted);
     if (session != m_session)
         return committed;
     clearComposition(!committed);
-    if (!committed || session != m_session
-        || !canCompose() || !learn || !precedingText().endsWith(converted))
-        return committed;
-
-    m_undo = {converted, learningCode, restore, query(Qt::ImCursorPosition).toInt(),
-              m_learningEnabled && !learningCode.isEmpty()};
-    // Restore the lexicon snapshot if the user undoes this selection.
-    m_compositionWords = extra;
-    emit undoCandidateChanged();
-    if (m_undo.learned) {
-        const auto profile = m_profile;
-        const auto locale = m_language;
-        QMetaObject::invokeMethod(m_lexicon, [lexicon = m_lexicon, profile, locale, learningCode, converted] {
-            lexicon->remember(profile, locale, learningCode, converted);
-        }, Qt::QueuedConnection);
-    }
-    return true;
+    if (committed && learn)
+        acceptEdit({{converted, learningCode, restore, start < 0 ? -1 : start + int(converted.size()),
+                     m_learningEnabled && !learningCode.isEmpty()}, session, true, extra});
+    return committed;
 }
 
 const KeyboardCandidate *KeyboardController::bestCompleteChinese() const
@@ -850,24 +824,15 @@ bool KeyboardController::commitSwipe(const KeyboardCandidate *candidate, bool ad
     const QString code = candidate ? candidate->code : QString();
     const QString commit = addSpace ? word + u' ' : word;
     const auto session = m_session;
+    const int start = learn ? selectionStart() : -1;
     const bool sent = sendCommit(commit);
     if (session != m_session)
         return sent;
     clearComposition(!sent);
-    if (!sent || session != m_session || !canCompose() || !learn
-        || code.isEmpty() || !precedingText().endsWith(commit))
-        return sent;
-
-    m_undo = {commit, code, {}, query(Qt::ImCursorPosition).toInt(), m_learningEnabled, word};
-    emit undoCandidateChanged();
-    if (m_learningEnabled && session == m_session) {
-        const auto profile = m_profile;
-        const auto locale = m_language;
-        QMetaObject::invokeMethod(m_lexicon, [lexicon = m_lexicon, profile, locale, code, word] {
-            lexicon->remember(profile, locale, code, word);
-        }, Qt::QueuedConnection);
-    }
-    return true;
+    if (sent && learn && !code.isEmpty())
+        acceptEdit({{commit, code, {}, start < 0 ? -1 : start + int(commit.size()),
+                     m_learningEnabled, word}, session, true, {}});
+    return sent;
 }
 
 void KeyboardController::undoCandidate()
@@ -961,6 +926,72 @@ void KeyboardController::refreshEnglish()
     requestCandidates(m_englishWord);
 }
 
+void KeyboardController::refreshExternalContext()
+{
+    if (!m_inputTarget || m_sending)
+        return;
+    if (m_pendingAcceptance) {
+        auto acceptance = std::move(*m_pendingAcceptance);
+        m_pendingAcceptance.reset();
+        if (confirmEdit(std::move(acceptance)))
+            return;
+    }
+
+    if (canUndoCandidate() && (query(Qt::ImCursorPosition).toInt() != m_undo.cursor
+        || !query(Qt::ImCurrentSelection).toString().isEmpty()
+        || !precedingText().endsWith(m_undo.text))) {
+        clearUndo();
+    }
+    if (m_swipePath.isEmpty() && m_language.startsWith(u"en-"))
+        refreshEnglish();
+}
+
+int KeyboardController::selectionStart() const
+{
+    const QVariant cursor = query(Qt::ImCursorPosition);
+    if (!cursor.isValid())
+        return -1;
+    const QVariant anchor = query(Qt::ImAnchorPosition);
+    return anchor.isValid() ? std::min(cursor.toInt(), anchor.toInt()) : cursor.toInt();
+}
+
+void KeyboardController::acceptEdit(PendingAcceptance acceptance)
+{
+    if (acceptance.session != m_session || !canCompose())
+        return;
+    if (m_inputTarget && m_inputTarget->hasDeferredContext())
+        m_pendingAcceptance = std::move(acceptance);
+    else
+        confirmEdit(std::move(acceptance));
+}
+
+bool KeyboardController::confirmEdit(PendingAcceptance acceptance)
+{
+    const QVariant position = query(Qt::ImCursorPosition);
+    auto &edit = acceptance.edit;
+    if (acceptance.session != m_session || !canCompose() || !position.isValid()
+        || (edit.cursor >= 0 && edit.cursor != position.toInt())
+        || !query(Qt::ImCurrentSelection).toString().isEmpty() || !precedingText().endsWith(edit.text))
+        return false;
+
+    edit.cursor = position.toInt();
+    edit.learned = edit.learned && m_learningEnabled;
+    if (edit.learned) {
+        const auto profile = m_profile;
+        const auto locale = m_language;
+        const auto word = edit.learnedWord.isEmpty() ? edit.text : edit.learnedWord;
+        QMetaObject::invokeMethod(m_lexicon, [lexicon = m_lexicon, profile, locale, code = edit.code, word] {
+            lexicon->remember(profile, locale, code, word);
+        }, Qt::QueuedConnection);
+    }
+    if (acceptance.offerUndo) {
+        m_compositionWords = std::move(acceptance.compositionWords);
+        m_undo = std::move(edit);
+        emit undoCandidateChanged();
+    }
+    return true;
+}
+
 QString KeyboardController::currentEnglishWord() const
 {
     if (!query(Qt::ImCurrentSelection).toString().isEmpty())
@@ -1030,6 +1061,7 @@ void KeyboardController::sendKey(int key, Qt::KeyboardModifiers modifiers, const
 
 void KeyboardController::clearUndo()
 {
+    m_pendingAcceptance.reset();
     if (m_undo.text.isEmpty())
         return;
     m_undo = {};

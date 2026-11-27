@@ -14,6 +14,16 @@
 
 [Apple 虚拟键盘指南](https://developer.apple.com/design/human-interface-guidelines/virtual-keyboards) · [Apple 按钮指南](https://developer.apple.com/design/human-interface-guidelines/buttons) · [Apple 无障碍指南](https://developer.apple.com/design/human-interface-guidelines/accessibility)
 
+## 参考图
+
+| 参考 | 实现与检查 |
+| --- | --- |
+| [浅色拼音](reference/keyboard-v3/light-pinyin.png) | 浅暖正文、局部冷色透射、边缘高光。实测输入拼音后先显示预编辑，再显示可点选候选 |
+| [深色英文](reference/keyboard-v3/dark-english.png) | 深灰紫背景、低亮度浮层与浅蓝提交键。候选位于按键上方，工具收在底部 |
+| [安全数字](reference/keyboard-v3/secure-numeric.png) | 居中 PIN 容器和三列数字键。实际输入才显示遮蔽字符，候选、语音、手写与剪贴板在密码会话关闭 |
+
+实际应用截图可用 `veloraime-demo --kiosk --preview-state light-pinyin --snapshot /tmp/veloraime-pinyin.png` 导出。也支持 `dark-english` 和 `secure-numeric`，预览使用独立应用配置。参考图的生成指令保存在 [prompts.md](reference/keyboard-v3/prompts.md)。
+
 ## 视觉层级
 
 | 层级 | 视觉与行为 |

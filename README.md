@@ -58,7 +58,7 @@ ctest --test-dir build/host --output-on-failure
 
 - 手写使用本机 Zinnia 库和 Tegaki 模型。默认模型位置为 `/usr/share/tegaki/models/zinnia/handwriting-zh_CN.model`，可用 `VELORA_HANDWRITING_MODEL` 指定本地模型。两项均可用时，键盘工具栏显示手写入口。 [Zinnia 上游](https://taku910.github.io/zinnia/) · [Tegaki 模型](https://tegaki.github.io/)
 - 离线语音使用 ALSA 的 `arecord` 和本机 sherpa-onnx SenseVoice，默认复用板上 `/userdata/rk3568-voice` 的 RKNN 运行时与模型。以 `VELORA_SPEECH_ROOT`、`VELORA_SPEECH_MODEL`、`VELORA_SPEECH_TOKENS`、`VELORA_SPEECH_PROVIDER` 和 `VELORA_CAPTURE_DEVICE` 配置。工具栏由用户点击开始录音，密码字段隐藏入口，切字段会丢弃旧结果。 [sherpa-onnx RK NPU](https://k2-fsa.github.io/sherpa/onnx/rk-npu/index.html)
-- 使用 `-DVELORA_BUILD_WESTON=ON` 构建独立的 `veloraime-weston`。需要 wayland-client、xkbcommon 和 wayland-protocols。Weston 的 desktop shell 以 `[input-method]` 的 `path=/usr/bin/veloraime-weston` 启动输入法。现有板上 kiosk shell 继续使用应用内组件，系统输入客户端需要在支持 input-method-v1 的 Weston shell 中启用。
+- 使用 `-DVELORA_BUILD_WESTON=ON` 构建独立的 `veloraime-weston`。需要 wayland-client、xkbcommon、wayland-protocols 和与 Qt 运行时同构建版本的 GuiPrivate 开发头文件。Weston 的 desktop shell 以 `[input-method]` 的 `path=/usr/bin/veloraime-weston` 启动输入法。现有板上 kiosk shell 使用应用内组件，系统输入客户端需要支持 input-method-v1 的 Weston shell。
 
 ## RK3568 固件集成
 
@@ -76,7 +76,7 @@ sha256sum build/veloraime-rk3568-update.img
 对正在使用的板子，可增量安装到 eMMC，并在现有 Weston 上验证输入。此路径适合保留板上的其他应用与数据。
 
 ```bash
-ADB_SERVER_PORT=5038 bash tools/rk3568/deploy_adb.sh build/stage-rk3568 ADB_SERIAL
+bash tools/rk3568/deploy_adb.sh build/stage-rk3568 ADB_SERIAL
 ```
 
 加上 `--exclusive` 后，板子开机进入 VeloraIME 全屏。专用模式保留 Weston 与硬件、网络服务，并把已知的其他显示应用启动器移至 `/etc/veloraime/paused-init`。在板端以 root 运行 `veloraime-display restore` 可还原启动器配置，重启后生效。5.5 英寸 1080×1920 DSI 屏默认采用约 414×736 逻辑像素，物理分辨率由 Weston 保持。应用缩放可通过 `/etc/default/veloraime` 的 `VELORA_DISPLAY_SCALE` 覆盖。

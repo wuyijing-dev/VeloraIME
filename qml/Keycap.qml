@@ -22,16 +22,19 @@ Item {
     property bool cursorDrag: false
     property bool preferScroll: false
     property bool highlighted: false
+    property bool prominentLabel: false
     property real visualGap: 4
     property real verticalGap: 6
     property real fontSize: secondary ? 15 : 22
     property real visualRadius: secondary ? 15 : 12
+    property real iconSize: 24
     readonly property bool pressedVisual: tap.pressed || drag.active || highlighted
 
     signal activated
     signal held
     signal holdMoved(point scenePosition)
     signal holdReleased
+    signal holdCanceled
     signal cursorMoved(int steps)
 
     implicitWidth: 44
@@ -48,6 +51,28 @@ Item {
     }
 
     Rectangle {
+        visible: !root.transparentRest && !root.theme.highContrast && !root.pressedVisual
+        x: cap.x - 1
+        y: cap.y + 3
+        width: cap.width + 2
+        height: cap.height + 1
+        radius: cap.radius + 1
+        color: root.theme.diffuseShadow
+        antialiasing: true
+    }
+
+    Rectangle {
+        visible: !root.transparentRest && !root.theme.highContrast && !root.pressedVisual
+        x: cap.x + 1
+        y: cap.y + 2
+        width: Math.max(0, cap.width - 2)
+        height: cap.height
+        radius: cap.radius
+        color: root.theme.contactShadow
+        antialiasing: true
+    }
+
+    Rectangle {
         id: cap
         anchors.fill: parent
         anchors.leftMargin: root.visualGap / 2
@@ -57,7 +82,7 @@ Item {
         radius: Math.min(root.visualRadius, Math.min(width, height) / 2)
         antialiasing: true
         color: root.pressedVisual ? root.theme.keyPressedFill : (root.accent ? root.theme.accent : (root.selected ? root.theme.selectionFill : (root.transparentRest ? "transparent" : (root.secondary ? root.theme.functionFill : root.theme.keyFill))))
-        border.color: root.highlighted || root.activeFocus ? root.theme.focusRing : root.theme.keyBorder
+        border.color: root.highlighted || root.activeFocus ? root.theme.focusRing : (root.theme.highContrast ? root.theme.keyBorder : root.theme.keyRim)
         border.width: root.highlighted || root.activeFocus ? 2 : (root.transparentRest && !root.pressedVisual && !root.selected ? 0 : (root.theme.highContrast ? 2 : 1))
         scale: root.theme.reduceMotion || root.highlighted ? 1 : (root.pressedVisual ? 0.95 : 1)
 
@@ -81,7 +106,7 @@ Item {
             anchors.fill: parent
             anchors.margins: 1
             radius: parent.radius - 1
-            opacity: root.pressedVisual ? 0.41 : 0.30
+            opacity: root.pressedVisual ? 0.30 : (root.accent ? 0.42 : 0.22)
             gradient: Gradient {
                 GradientStop {
                     position: 0
@@ -114,7 +139,7 @@ Item {
             text: root.label
             color: inverted ? root.theme.accentText : root.theme.textPrimary
             font.pixelSize: Math.round(root.fontSize * root.theme.fontScale)
-            font.weight: root.secondary ? Font.DemiBold : Font.Normal
+            font.weight: root.secondary || root.prominentLabel ? Font.DemiBold : Font.Normal
             fontSizeMode: Text.Fit
             minimumPixelSize: 11
             maximumLineCount: 1
@@ -141,6 +166,7 @@ Item {
             anchors.centerIn: parent
             width: 24
             height: 24
+            scale: root.iconSize / 24
             visible: root.icon !== ""
             preferredRendererType: Shape.CurveRenderer
             ShapePath {
@@ -160,6 +186,8 @@ Item {
                             return "M 4 11 L 12 3 L 20 11 H 16 V 16 H 8 V 11 Z M 8 20 H 16";
                         case "close":
                             return "M 5 9 L 12 15 L 19 9 M 8 19 H 16";
+                        case "dismiss":
+                            return "M 6 6 L 18 18 M 18 6 L 6 18";
                         case "expand":
                             return "M 5 9 L 12 15 L 19 9";
                         case "collapse":
@@ -172,6 +200,8 @@ Item {
                             return "M 8 6 H 5 V 21 H 19 V 6 H 16 M 8 4 H 16 V 8 H 8 Z M 8 12 H 16 M 8 16 H 14";
                         case "layout":
                             return "M 3 5 H 21 V 19 H 3 Z M 7 9 H 7.1 M 12 9 H 12.1 M 17 9 H 17.1 M 7 14 H 17";
+                        case "globe":
+                            return "M 21 12 A 9 9 0 1 1 3 12 A 9 9 0 1 1 21 12 M 3 12 H 21 M 12 3 C 6.7 7.2 6.7 16.8 12 21 M 12 3 C 17.3 7.2 17.3 16.8 12 21";
                         case "left":
                             return "M 14 5 L 7 12 L 14 19";
                         case "right":
@@ -197,6 +227,8 @@ Item {
 
     TapHandler {
         id: tap
+        property bool holdRecognized: false
+        grabPermissions: PointerHandler.CanTakeOverFromItems | PointerHandler.CanTakeOverFromHandlersOfDifferentType | (holdRecognized ? 0 : PointerHandler.ApprovesTakeOverByAnything)
         gesturePolicy: root.cursorDrag || root.preferScroll ? TapHandler.DragThreshold : TapHandler.ReleaseWithinBounds
         longPressThreshold: root.repeats ? 0.36 : (root.hasAlternates ? 0.44 : 60)
         onTapped: root.activated()
@@ -205,15 +237,29 @@ Item {
                 root.activated();
                 repeatTimer.start();
             }
-            if (root.hasAlternates)
+            if (root.hasAlternates) {
+                holdRecognized = true;
                 root.held();
+            }
         }
         onPressedChanged: {
-            if (!pressed) {
+            if (!pressed)
                 repeatTimer.stop();
-                if (root.hasAlternates)
-                    root.holdReleased();
+        }
+        onGrabChanged: (transition, eventPoint) => {
+            if (!holdRecognized)
+                return;
+            const canceled = transition === PointerDevice.CancelGrabExclusive || transition === PointerDevice.CancelGrabPassive;
+            const ungrabbed = transition === PointerDevice.UngrabExclusive || transition === PointerDevice.UngrabPassive;
+            if (!canceled && !ungrabbed)
+                return;
+            holdRecognized = false;
+            if (canceled || eventPoint.state !== EventPoint.Released) {
+                root.holdCanceled();
+                return;
             }
+            root.holdMoved(eventPoint.scenePosition);
+            root.holdReleased();
         }
         onPointChanged: {
             if (root.hasAlternates && pressed)

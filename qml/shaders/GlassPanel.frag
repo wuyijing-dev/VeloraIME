@@ -8,6 +8,7 @@ layout(std140, binding = 0) uniform buf {
     float qt_Opacity;
     vec2 panelSize;
     vec4 tint;
+    vec4 lensLight;
     float tintStrength;
     float cornerRadius;
     float refraction;
@@ -54,14 +55,17 @@ void main()
 
     // The curved edge transmits more of its surroundings and catches light
     // differently around the silhouette. The center stays diffuse for labels.
-    float innerRim = smoothstep(-7.0, -3.0, edge) * (1.0 - smoothstep(-1.7, 0.0, edge));
+    float innerRim = smoothstep(-10.0, -2.4, edge) * (1.0 - smoothstep(-0.8, 0.6, edge));
     material = mix(material, background, innerRim * (refraction > 0.0 ? 0.20 : 0.07));
     float illuminated = max(0.0, dot(normal, vec2(-0.49, -0.87)));
     float shaded = max(0.0, dot(normal, vec2(0.38, 0.92)));
     float reflection = pow(illuminated, 2.6) * innerRim;
+    float topCorner = 1.0 - smoothstep(0.0, 0.44, length(qt_TexCoord0 - vec2(0.89, 0.05)));
+    float bottomCorner = 1.0 - smoothstep(0.0, 0.42, length(qt_TexCoord0 - vec2(0.11, 0.98)));
+    float edgePrism = (topCorner * 0.58 + bottomCorner * 0.38) * smoothstep(-17.0, 0.0, edge);
     float border = smoothstep(-1.5, -0.2, edge);
     material *= 1.0 - shaded * (0.08 * innerRim + 0.06 * border);
-    material = mix(material, vec3(0.97, 0.98, 1.0),
-                   reflection * mix(0.35, 0.16, darkMode) + illuminated * border * 0.08);
+    material = mix(material, lensLight.rgb,
+                   clamp(edgePrism + reflection * mix(0.34, 0.30, darkMode) + illuminated * border * 0.10, 0.0, 0.83));
     fragColor = vec4(material, 1.0) * coverage * qt_Opacity;
 }

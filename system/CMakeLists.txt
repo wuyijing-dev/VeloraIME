@@ -1,4 +1,5 @@
 enable_language(C)
+find_package(Qt6 6.12 REQUIRED COMPONENTS GuiPrivate)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client>=1.21 xkbcommon)
 pkg_get_variable(wayland_protocols_dir wayland-protocols pkgdatadir)
@@ -17,9 +18,11 @@ foreach(protocol IN ITEMS input-method text-input)
     list(APPEND protocol_files "${header}" "${code}")
 endforeach()
 
-qt_add_executable(veloraime-weston main.cpp waylandkeyboard.cpp waylandkeyboard.h ${protocol_files})
+qt_add_executable(veloraime-weston main.cpp waylandkeyboard.cpp waylandkeyboard.h
+    waylandtouch.cpp waylandtouch.h ${protocol_files})
 target_include_directories(veloraime-weston PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" ../src)
-target_link_libraries(veloraime-weston PRIVATE VeloraIME PkgConfig::WAYLAND Qt6::Quick Qt6::Sql)
+target_link_libraries(veloraime-weston PRIVATE VeloraIME PkgConfig::WAYLAND
+    Qt6::GuiPrivate Qt6::Quick Qt6::Sql)
 target_compile_definitions(veloraime-weston PRIVATE
     VELORA_BUILD_IMPORT_DIR="${QT_QML_OUTPUT_DIRECTORY}"
     VELORA_QML_INSTALL_DIR="${VELORA_QML_INSTALL_DIR}")

@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <functional>
+#include <optional>
 
 class KeyboardInputTarget : public QObject
 {
@@ -26,12 +27,15 @@ public:
     virtual bool commit(const QString &text, int replacementStart, int replacementLength) = 0;
     virtual void preedit(const QString &text) = 0;
     virtual void key(int key, Qt::KeyboardModifiers modifiers, const QString &text) = 0;
+    virtual bool hasDeferredContext() const { return false; }
 
 signals:
     // sessionChanged indicates the old editor no longer accepts preedit or commit.
     void sessionChanged();
     // stateChanged can update hints or availability within the current session.
     void stateChanged();
+    // Deferred targets emit after the focused editor reports its updated context.
+    void contextChanged();
 };
 
 class KeyboardController : public QObject
@@ -168,6 +172,12 @@ private:
         bool learned = false;
         QString learnedWord;
     };
+    struct PendingAcceptance {
+        Undo edit;
+        quint64 session;
+        bool offerUndo;
+        QList<KeyboardWord> compositionWords;
+    };
     struct CompositionPart {
         QString text;
         QString raw;
@@ -184,6 +194,10 @@ private:
     void refreshComposition();
     void clearCandidates();
     void refreshEnglish();
+    void refreshExternalContext();
+    int selectionStart() const;
+    void acceptEdit(PendingAcceptance acceptance);
+    bool confirmEdit(PendingAcceptance acceptance);
     QString currentEnglishWord() const;
     QString precedingText() const;
     QString restrictText(const QString &text) const;
@@ -228,6 +242,7 @@ private:
     QVariantList m_userPhrases;
     QTimer m_clipboardTimer;
     Undo m_undo;
+    std::optional<PendingAcceptance> m_pendingAcceptance;
     Qt::InputMethodHints m_hints;
     Qt::EnterKeyType m_enter = Qt::EnterKeyDefault;
     bool m_enabled = true;

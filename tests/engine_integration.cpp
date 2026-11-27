@@ -4,6 +4,7 @@
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickItem>
+#include <QSet>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -29,6 +30,60 @@ QString findCandidate(const KeyboardController &controller, const QString &word)
     }
     return {};
 }
+
+class DeferredEditor : public KeyboardInputTarget
+{
+public:
+    bool active() const override { return true; }
+    bool hasDeferredContext() const override { return true; }
+
+    QVariant query(Qt::InputMethodQuery property) const override
+    {
+        if (property == Qt::ImHints)
+            return int(Qt::ImhNone);
+        if (m_pending)
+            return {};
+        switch (property) {
+        case Qt::ImCurrentSelection:
+            return QString();
+        case Qt::ImAnchorPosition:
+        case Qt::ImCursorPosition:
+            return int(m_text.size());
+        case Qt::ImTextBeforeCursor:
+            return m_text;
+        default:
+            return {};
+        }
+    }
+
+    bool commit(const QString &text, int start, int length) override
+    {
+        auto next = m_pending.value_or(m_text);
+        const auto cursor = next.size() + start;
+        if (cursor < 0 || cursor > next.size() || cursor + length > next.size())
+            return false;
+        next.replace(cursor, length, text);
+        m_pending = next;
+        return true;
+    }
+
+    void preedit(const QString &) override {}
+    void key(int, Qt::KeyboardModifiers, const QString &) override {}
+
+    QString content() const { return m_text; }
+
+    void acknowledge(bool apply = true)
+    {
+        if (apply && m_pending)
+            m_text = *m_pending;
+        m_pending.reset();
+        emit contextChanged();
+    }
+
+private:
+    QString m_text;
+    std::optional<QString> m_pending;
+};
 }
 
 class EngineIntegration : public QObject
@@ -41,10 +96,12 @@ private slots:
     void nativeEditingAndLimits();
     void cancelOnFocusOrHide();
     void pinyinModes();
+    void liveCandidateAndPinPresentation();
     void privacyAndClipboard();
     void profileAndSupplementalPacks();
     void swipeAndRecognitionDelivery();
     void clipboardHistoryAndRecentEmoji();
+    void deferredEditorAcknowledgements();
 
 private:
     QTemporaryDir m_data;
@@ -240,6 +297,74 @@ void EngineIntegration::pinyinModes()
     QTRY_VERIFY(!findCandidate(key, u"中"_s).isEmpty());
 }
 
+void EngineIntegration::liveCandidateAndPinPresentation()
+{
+    auto first = editor(*m_window, "first");
+    auto password = editor(*m_window, "password");
+    auto &key = *m_controller;
+    key.setLanguage(u"zh-CN"_s);
+    for (const QChar letter : u"nihao"_s)
+        key.input(QString(letter));
+    QCOMPARE(key.preedit(), u"nihao"_s);
+    QCOMPARE(first->property("preeditText").toString(), key.preedit());
+    QCOMPARE(first->property("text").toString(), QString());
+    QTRY_VERIFY(!findCandidate(key, u"你好"_s).isEmpty());
+    const QString chineseCandidate = findCandidate(key, u"你好"_s);
+    QSet<QString> ids;
+    for (const auto &entry : key.candidates()) {
+        const auto item = entry.toMap();
+        QVERIFY(!item.value(u"text"_s).toString().isEmpty());
+        QCOMPARE(item.value(u"correction"_s).metaType(), QMetaType::fromType<bool>());
+        const auto id = item.value(u"id"_s).toString();
+        QVERIFY(!id.isEmpty() && !ids.contains(id));
+        ids.insert(id);
+    }
+    key.selectCandidate(chineseCandidate);
+    QCOMPARE(first->property("text").toString(), u"你好"_s);
+    QVERIFY(key.preedit().isEmpty());
+    QVERIFY(key.candidates().isEmpty());
+
+    key.setLanguage(u"en-US"_s);
+    key.input(u"hel"_s);
+    QCOMPARE(first->property("text").toString(), u"你好hel"_s);
+    QVERIFY(key.preedit().isEmpty());
+    QTRY_VERIFY(!findCandidate(key, u"hello"_s).isEmpty());
+    const QString englishCandidate = findCandidate(key, u"hello"_s);
+    QVERIFY(!ids.contains(englishCandidate));
+    key.selectCandidate(chineseCandidate);
+    QCOMPARE(first->property("text").toString(), u"你好hel"_s);
+    key.selectCandidate(englishCandidate);
+    QCOMPARE(first->property("text").toString(), u"你好hello"_s);
+
+    key.input(u" hel"_s);
+    QTRY_VERIFY(!findCandidate(key, u"hello"_s).isEmpty());
+    const QString previousCandidate = findCandidate(key, u"hello"_s);
+    password->forceActiveFocus();
+    QCOMPARE(key.inputMode(), u"number"_s);
+    QVERIFY(key.sensitive());
+    QVERIFY(!key.privateMode());
+    QVERIFY(key.preedit().isEmpty() && key.candidates().isEmpty());
+    QVERIFY(!key.canUndoCandidate());
+    key.selectCandidate(previousCandidate);
+    QCOMPARE(password->property("text").toString(), QString());
+    QVERIFY(password->setProperty("maximumLength", 4));
+    key.input(u"1a2-3 4５6"_s);
+    QCOMPARE(password->property("text").toString(), u"1234"_s);
+    QCOMPARE(password->property("displayText").toString().size(), 4);
+    QVERIFY(password->property("displayText").toString() != u"1234");
+    key.backspace();
+    QCOMPARE(password->property("text").toString(), u"123"_s);
+
+    first->forceActiveFocus();
+    QCOMPARE(key.inputMode(), u"text"_s);
+    QVERIFY(!key.sensitive());
+    key.setPrivateMode(true);
+    QVERIFY(key.sensitive() && key.privateMode());
+    QVERIFY(key.preedit().isEmpty() && key.candidates().isEmpty());
+    key.setPrivateMode(false);
+    QVERIFY(!key.sensitive());
+}
+
 void EngineIntegration::privacyAndClipboard()
 {
     auto password = editor(*m_window, "password");
@@ -262,6 +387,11 @@ void EngineIntegration::privacyAndClipboard()
 
     auto first = editor(*m_window, "first");
     first->forceActiveFocus();
+    const auto normal = first->property("echoMode");
+    first->setProperty("echoMode", password->property("echoMode"));
+    QVERIFY(key.sensitive());
+    first->setProperty("echoMode", normal);
+    QVERIFY(!key.sensitive());
     key.setPrivateMode(true);
     key.input(u"test"_s);
     QCOMPARE(first->property("text").toString(), u"test"_s);
@@ -398,6 +528,46 @@ void EngineIntegration::clipboardHistoryAndRecentEmoji()
     QTRY_COMPARE(key.recentEmoji(), QStringList{emoji});
     key.setPrivateMode(true);
     QVERIFY(key.recentEmoji().isEmpty());
+}
+
+void EngineIntegration::deferredEditorAcknowledgements()
+{
+    DeferredEditor editor;
+    auto &key = *m_controller;
+    key.setInputTarget(&editor);
+    key.input(u"he"_s);
+    key.input(u"lo"_s);
+    QVERIFY(key.candidates().isEmpty());
+    QCOMPARE(editor.content(), QString());
+    editor.acknowledge();
+    QCOMPARE(editor.content(), u"helo"_s);
+    QTRY_VERIFY(!findCandidate(key, u"hello"_s).isEmpty());
+    key.selectCandidate(findCandidate(key, u"hello"_s));
+    QVERIFY(!key.canUndoCandidate());
+    QVERIFY(key.candidates().isEmpty());
+    editor.acknowledge(false);
+    QCOMPARE(editor.content(), u"helo"_s);
+    QVERIFY(!key.canUndoCandidate());
+
+    QTRY_VERIFY(!findCandidate(key, u"hello"_s).isEmpty());
+    key.selectCandidate(findCandidate(key, u"hello"_s));
+    QVERIFY(!key.canUndoCandidate());
+    editor.acknowledge();
+    QCOMPARE(editor.content(), u"hello"_s);
+    QVERIFY(key.canUndoCandidate());
+    key.undoCandidate();
+    editor.acknowledge();
+    QCOMPARE(editor.content(), u"helo"_s);
+
+    key.setLanguage(u"zh-CN"_s);
+    key.input(u"nihao"_s);
+    QTRY_VERIFY(!findCandidate(key, u"你好"_s).isEmpty());
+    key.selectCandidate(findCandidate(key, u"你好"_s));
+    QVERIFY(!key.canUndoCandidate());
+    editor.acknowledge();
+    QCOMPARE(editor.content(), u"helo你好"_s);
+    QVERIFY(key.canUndoCandidate());
+    key.setInputTarget(nullptr);
 }
 
 QTEST_MAIN(EngineIntegration)

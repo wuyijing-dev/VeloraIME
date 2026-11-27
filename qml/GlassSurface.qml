@@ -89,10 +89,11 @@ Item {
                 property var source: sceneTexture
                 property size panelSize: Qt.size(width, height)
                 property color tint: root.theme.surfaceTint
+                property color lensLight: root.theme.lensLight
                 property real tintStrength: root.theme.surfaceOpacity
                 property real cornerRadius: Math.min(root.theme.panelRadius, Math.min(width, height) / 2)
                 property real refraction: root.lightMaterial ? 0 : 9
-                property real blurRadius: root.lightMaterial ? 7 : 14
+                property real blurRadius: root.lightMaterial ? 8 : 16
                 fragmentShader: "qrc:/qt/qml/Rk/TouchKeyboard/shaders/GlassPanel.frag.qsb"
             }
         }
@@ -103,7 +104,7 @@ Item {
         radius: root.theme.panelRadius
         color: "transparent"
         border.width: root.theme.highContrast ? 2 : 1
-        border.color: root.theme.highContrast ? root.theme.keyBorder : root.theme.rimShadow
+        border.color: root.theme.highContrast ? root.theme.keyBorder : root.theme.keyRim
         antialiasing: true
     }
 

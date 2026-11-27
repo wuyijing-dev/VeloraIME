@@ -92,7 +92,7 @@ TestCase {
         testCase.height = 736;
         verify(waitForPolish(keyboard.Window.window));
         compare(keyboard.width, 414);
-        verify(keyboard.height >= 275 && keyboard.height <= 325);
+        verify(keyboard.height >= 318 && keyboard.height <= 345);
         verify(keyboard.needsCompactQwerty);
 
         const q = key("key-text-q");
@@ -198,10 +198,56 @@ TestCase {
         verify(waitForPolish(keyboard.Window.window));
         verify(!findChild(keyboard, "keyboardClipboard").visible);
         verify(!findChild(keyboard, "keyboardEmoji").visible);
-        mouseClick(key("key-text-1"));
+        verify(!findChild(keyboard, "keyboardContext").visible);
+        verify(!findChild(keyboard, "keyboardUtility").visible);
+        const one = key("key-text-1");
+        const two = key("key-text-2");
+        const three = key("key-text-3");
+        const four = key("key-text-4");
+        compare(one.width, two.width);
+        compare(two.width, three.width);
+        compare(one.mapToItem(keyboard, 0, 0).x, four.mapToItem(keyboard, 0, 0).x);
+        compare(one.mapToItem(keyboard, 0, 0).y, three.mapToItem(keyboard, 0, 0).y);
+        mouseClick(one);
+        mouseClick(two);
+        compare(pin.text, "12");
+        mouseClick(key("key-backspace"));
         compare(pin.text, "1");
         compare(keyboard.controller.candidates.length, 0);
         verify(pin.activeFocus);
+        mouseClick(key("key-dismiss"));
+        verify(!keyboard.visible);
+    }
+
+    function test_preeditCandidateAndUtilityRegions() {
+        keyboard.controller.language = "zh-CN";
+        for (const letter of "nihao")
+            keyboard.controller.input(letter);
+        const preedit = findChild(keyboard, "keyboardPreedit");
+        const rail = findChild(keyboard, "keyboardCandidates");
+        const tools = findChild(keyboard, "keyboardUtility");
+        tryCompare(preedit, "text", "nihao");
+        tryVerify(() => rail.count > 0);
+        verify(preedit.visible && rail.visible && tools.visible);
+        verify(preedit.mapToItem(keyboard, 0, 0).y < rail.mapToItem(keyboard, 0, 0).y);
+        verify(rail.mapToItem(keyboard, 0, rail.height).y <= key("key-text-q").mapToItem(keyboard, 0, 0).y);
+        verify(tools.mapToItem(keyboard, 0, 0).y >= key("key-space").mapToItem(keyboard, 0, key("key-space").height).y);
+        compare(editor.text, "");
+        verify(editor.activeFocus);
+    }
+
+    function test_longPressCanSlideToAlternate() {
+        const a = key("key-text-a");
+        const touch = touchEvent(keyboard);
+        touch.press(0, a).commit();
+        wait(520);
+        const alternatives = findChild(keyboard, "keyboardAlternates");
+        tryCompare(alternatives, "visible", true);
+        touch.move(0, alternatives, 16, 24).commit();
+        wait(30);
+        touch.release(0, alternatives, 16, 24).commit();
+        compare(editor.text, "à");
+        verify(!alternatives.visible);
     }
 
     function test_nineKeySymbolPageInsertsDigitsDirectly() {

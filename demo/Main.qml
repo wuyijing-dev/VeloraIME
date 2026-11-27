@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtQuick.Shapes
 import QtCore
 import Rk.TouchKeyboard
 
@@ -30,11 +31,11 @@ ApplicationWindow {
     property string dictionaryStatus: ""
 
     readonly property bool compactHeight: height < 510
-    readonly property int sideInset: width < 520 ? 16 : 24
+    readonly property int sideInset: width < 380 ? 16 : (width < 520 ? 22 : 26)
     readonly property string displayFamily: Qt.fontFamilies().includes("Nunito") ? "Nunito" : font.family
     readonly property color ink: highContrast ? (dark ? "#ffffff" : "#0b111b")
                                                : (dark ? "#f4f6fa" : "#1c222d")
-    readonly property color secondaryInk: dark ? "#bdc8d8" : "#535f70"
+    readonly property color secondaryInk: dark ? "#cbd0e1" : "#4e5562"
     readonly property color accentInk: dark ? "#9dccff" : "#185bad"
     readonly property color accentLabel: dark ? "#101c30" : "#ffffff"
     readonly property color paper: dark ? "#23262f" : "#fbfcfe"
@@ -78,6 +79,8 @@ ApplicationWindow {
     }
 
     function openPage(destination, editor) {
+        if (page === "pin" && destination !== "pin")
+            pin.clear()
         page = destination
         if (settings.visible) {
             settingsEditor = editor
@@ -161,6 +164,84 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+    }
+
+    component HeaderGlyph: Canvas {
+        id: glyph
+        property bool locked: false
+        property color inkColor: window.ink
+        implicitWidth: locked ? 70 : 52
+        implicitHeight: 24
+
+        onInkColorChanged: requestPaint()
+        onLockedChanged: requestPaint()
+        onWidthChanged: requestPaint()
+        onHeightChanged: requestPaint()
+
+        onPaint: {
+            const ctx = getContext("2d")
+            ctx.reset()
+            ctx.translate((width - implicitWidth) / 2, (height - implicitHeight) / 2)
+            ctx.strokeStyle = inkColor
+            ctx.lineWidth = 1.65
+            ctx.lineCap = "round"
+            ctx.lineJoin = "round"
+
+            if (locked) {
+                ctx.beginPath()
+                ctx.moveTo(6, 12)
+                ctx.lineTo(6, 9.5)
+                ctx.bezierCurveTo(6, 3.35, 15, 3.35, 15, 9.5)
+                ctx.lineTo(15, 12)
+                ctx.stroke()
+                ctx.beginPath()
+                ctx.roundedRect(3.8, 11.6, 13.4, 10.1, 2.2, 2.2)
+                ctx.stroke()
+
+                ctx.fillStyle = window.dark ? "#655c73" : "#99897b"
+                ctx.beginPath()
+                ctx.roundedRect(27, 2, 42, 20, 10, 10)
+                ctx.fill()
+                ctx.fillStyle = window.dark ? "#f3f2fa" : "#ffffff"
+                ctx.beginPath()
+                ctx.arc(58.5, 12, 8, 0, 2 * Math.PI)
+                ctx.fill()
+                return
+            }
+
+            const radii = [8, 8, 10.1, 10.1, 8, 8]
+            ctx.beginPath()
+            for (let tooth = 0; tooth < 8; ++tooth) {
+                for (let point = 0; point < radii.length; ++point) {
+                    const angle = -Math.PI / 2 + (tooth + point / radii.length) * Math.PI / 4
+                    const x = 13 + Math.cos(angle) * radii[point]
+                    const y = 12 + Math.sin(angle) * radii[point]
+                    if (tooth === 0 && point === 0)
+                        ctx.moveTo(x, y)
+                    else
+                        ctx.lineTo(x, y)
+                }
+            }
+            ctx.closePath()
+            ctx.stroke()
+            ctx.beginPath()
+            ctx.arc(13, 12, 3.25, 0, 2 * Math.PI)
+            ctx.stroke()
+
+            ctx.globalAlpha = 0.55
+            ctx.lineWidth = 0.7
+            ctx.beginPath()
+            ctx.moveTo(33, 5)
+            ctx.lineTo(33, 19)
+            ctx.stroke()
+            ctx.globalAlpha = 1
+            ctx.lineWidth = 1.7
+            ctx.beginPath()
+            ctx.moveTo(42, 7.5)
+            ctx.lineTo(46.5, 12)
+            ctx.lineTo(42, 16.5)
+            ctx.stroke()
         }
     }
 
@@ -332,43 +413,108 @@ ApplicationWindow {
     Item {
         id: content
         anchors.fill: parent
+        clip: true
 
         Rectangle {
             anchors.fill: parent
             gradient: Gradient {
-                GradientStop { position: 0; color: window.dark ? "#272a33" : "#f5f6f8" }
-                GradientStop { position: 0.55; color: window.dark ? "#1a1d26" : "#e2e7ef" }
-                GradientStop { position: 1; color: window.dark ? "#303b4d" : "#bac9dc" }
+                GradientStop {
+                    position: 0
+                    color: window.dark ? "#191a2b" : (window.page === "pin" ? "#faf0e9" : "#fbf6f0")
+                }
+                GradientStop {
+                    position: 0.57
+                    color: window.dark ? "#222239" : (window.page === "pin" ? "#fbf5f1" : "#f8f2ed")
+                }
+                GradientStop {
+                    position: 1
+                    color: window.dark ? "#333052" : (window.page === "pin" ? "#eadbd0" : "#d5deed")
+                }
             }
         }
+
         Rectangle {
             anchors.fill: parent
-            visible: !window.solid
+            visible: !window.dark && !window.solid && !window.highContrast
             gradient: Gradient {
                 orientation: Gradient.Horizontal
-                GradientStop { position: 0; color: window.dark ? "#42394d6e" : "#6af6f8fb" }
-                GradientStop { position: 0.65; color: "transparent" }
-                GradientStop { position: 1; color: window.dark ? "#302a233f" : "#3ba2b6d0" }
+                GradientStop { position: 0; color: window.page === "pin" ? "#39f8e7da" : "#38fff5e7" }
+                GradientStop { position: 0.47; color: "transparent" }
+                GradientStop { position: 1; color: window.page === "pin" ? "#66f7e5da" : "#b5bed3f2" }
+            }
+        }
+
+        Shape {
+            anchors.fill: parent
+            visible: window.dark && !window.solid && !window.highContrast
+
+            ShapePath {
+                startX: 0
+                startY: content.height * 0.455
+                strokeColor: "#248e76c9"
+                strokeWidth: 1
+                fillGradient: LinearGradient {
+                    x1: 0
+                    y1: content.height * 0.455
+                    x2: content.width * 0.26
+                    y2: content.height * 0.70
+                    GradientStop { position: 0; color: "#674b4075" }
+                    GradientStop { position: 1; color: "#0c27223d" }
+                }
+                PathCubic {
+                    x: content.width * 0.53
+                    y: content.height * 0.77
+                    control1X: content.width * 0.19
+                    control1Y: content.height * 0.42
+                    control2X: content.width * 0.37
+                    control2Y: content.height * 0.58
+                }
+                PathLine { x: 0; y: content.height * 0.8 }
+                PathLine { x: 0; y: content.height * 0.455 }
+            }
+
+            ShapePath {
+                startX: content.width
+                startY: content.height * 0.37
+                strokeColor: "#235c79bb"
+                strokeWidth: 1
+                fillGradient: LinearGradient {
+                    x1: content.width
+                    y1: content.height * 0.38
+                    x2: content.width * 0.67
+                    y2: content.height * 0.71
+                    GradientStop { position: 0; color: "#3742527e" }
+                    GradientStop { position: 1; color: "#0525263b" }
+                }
+                PathCubic {
+                    x: content.width * 0.35
+                    y: content.height * 0.78
+                    control1X: content.width * 0.69
+                    control1Y: content.height * 0.43
+                    control2X: content.width * 0.50
+                    control2Y: content.height * 0.58
+                }
+                PathLine { x: content.width; y: content.height * 0.80 }
+                PathLine { x: content.width; y: content.height * 0.37 }
             }
         }
 
         RowLayout {
             id: chrome
             anchors.top: parent.top
-            anchors.topMargin: window.compactHeight ? 8 : 17
+            anchors.topMargin: window.compactHeight ? 7 : 20
             anchors.horizontalCenter: parent.horizontalCenter
             width: Math.min(parent.width - 2 * window.sideInset, 740)
-            height: window.compactHeight ? 46 : 56
+            height: window.compactHeight ? 44 : 46
             spacing: 8
 
             Label {
-                Layout.leftMargin: 3
                 Layout.fillWidth: true
                 color: window.ink
                 text: window.page === "phrases" ? "我的短语"
                       : window.page === "fields" ? "专用字段" : "VeloraIME"
                 font.family: window.displayFamily
-                font.pixelSize: window.scaled(window.compactHeight ? 25 : 31)
+                font.pixelSize: window.scaled(window.compactHeight ? 24 : 28)
                 font.weight: Font.Bold
                 font.letterSpacing: window.page === "editor" ? -0.65 : 0
                 elide: Text.ElideRight
@@ -377,20 +523,32 @@ ApplicationWindow {
 
             GlassButton {
                 objectName: "velora-settings-button"
-                text: window.page === "editor" ? "设置" : "完成"
+                visible: window.page === "editor" || window.page === "pin"
+                Layout.preferredWidth: window.page === "pin" ? 105 : 81
+                Layout.preferredHeight: 44
+                text: window.page === "pin" ? "结束 PIN 输入" : "设置"
+                Accessible.name: text
+                contentItem: HeaderGlyph { locked: window.page === "pin" }
                 onClicked: {
-                    if (window.page === "editor")
-                        window.openSettings()
-                    else
+                    if (window.page === "pin")
                         window.openPage("editor", note)
+                    else
+                        window.openSettings()
                 }
+            }
+
+            GlassButton {
+                visible: window.page !== "editor" && window.page !== "pin"
+                text: "完成"
+                onClicked: window.openPage("editor", note)
             }
         }
 
         Flickable {
             id: editorView
             anchors.top: chrome.bottom
-            anchors.topMargin: window.compactHeight ? 7 : 11
+            anchors.topMargin: window.compactHeight ? 7
+                               : (window.page === "editor" ? (window.dark ? 24 : 42) : 14)
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -425,23 +583,26 @@ ApplicationWindow {
                     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
                     background: Rectangle {
-                        radius: window.compactHeight ? 18 : 24
-                        color: window.paper
-                        border.color: note.activeFocus && window.highContrast ? window.accentInk : window.paperEdge
-                        border.width: window.highContrast ? 2 : 1
+                        radius: 14
+                        color: "transparent"
+                        border.color: note.activeFocus ? window.accentInk : window.paperEdge
+                        border.width: window.highContrast ? 2 : 0
+                        visible: window.highContrast
                     }
 
                     TextArea {
                         id: note
                         objectName: "velora-primary-editor"
 
-                        padding: window.compactHeight ? 13 : 18
-                        placeholderText: "写点什么…"
+                        readonly property bool chinese: panel.controller.language.startsWith("zh")
+                        padding: 5
+                        placeholderText: chinese ? "一起把想法写下来。" : "A little room for ideas."
                         wrapMode: TextEdit.Wrap
                         color: window.ink
                         placeholderTextColor: window.secondaryInk
-                        font.pixelSize: window.scaled(18)
+                        font.pixelSize: window.scaled(window.compactHeight ? 18 : (chinese ? 23 : 21))
                         background: null
+                        cursorDelegate: Rectangle { width: 2; radius: 1; color: window.accentInk }
                         Accessible.name: "正文"
                         onActiveFocusChanged: if (activeFocus) window.showFor(note)
                         TapHandler { onTapped: window.showFor(note) }
@@ -462,14 +623,82 @@ ApplicationWindow {
                         Accessible.name: "邮箱"
                     }
 
-                    WorkspaceField {
-                        id: pin
-                        objectName: "velora-pin-editor"
-                        Layout.fillWidth: true
-                        placeholderText: "PIN"
-                        inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhHiddenText | Qt.ImhSensitiveData
-                        echoMode: TextInput.Password
-                        Accessible.name: "PIN"
+                }
+
+                Item {
+                    visible: window.page === "pin"
+                    Layout.fillWidth: true
+                    Layout.topMargin: window.compactHeight ? 0 : Math.min(73, editorView.height * 0.18)
+                    Layout.preferredHeight: pinCard.height + 5
+
+                    Rectangle {
+                        anchors.fill: pinCard
+                        anchors.topMargin: 6
+                        anchors.bottomMargin: -3
+                        radius: pinCard.radius
+                        visible: !window.solid
+                        color: window.dark ? "#550c0c16" : "#239c7360"
+                    }
+
+                    ChromeSurface {
+                        id: pinCard
+                        width: Math.min(parent.width, 264)
+                        height: window.compactHeight ? 82 : 130
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        radius: window.compactHeight ? 20 : 30
+                        border.color: window.highContrast ? window.paperEdge
+                                      : (window.dark ? "#78778d" : "#fffdfa")
+                        gradient: Gradient {
+                            GradientStop {
+                                position: 0
+                                color: window.dark ? "#e13b3b50" : "#f6fffbf8"
+                            }
+                            GradientStop {
+                                position: 1
+                                color: window.solid ? window.paper
+                                       : (window.dark ? "#df2b2b3e" : "#edf5ebe5")
+                            }
+                        }
+
+                        Label {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.top: parent.top
+                            anchors.topMargin: window.compactHeight ? 6 : 16
+                            text: "PIN"
+                            font.family: window.displayFamily
+                            font.pixelSize: window.scaled(window.compactHeight ? 15 : 18)
+                            font.weight: Font.DemiBold
+                            color: window.secondaryInk
+                        }
+
+                        WorkspaceField {
+                            id: pin
+                            objectName: "velora-pin-editor"
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: window.compactHeight ? 4 : 16
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            horizontalAlignment: TextInput.AlignHCenter
+                            inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhHiddenText | Qt.ImhSensitiveData
+                                              | Qt.ImhNoPredictiveText
+                            echoMode: TextInput.Password
+                            passwordMaskDelay: 0
+                            passwordCharacter: "\u2022"
+                            maximumLength: 4
+                            validator: RegularExpressionValidator { regularExpression: /[0-9]{0,4}/ }
+                            font.pixelSize: window.scaled(window.compactHeight ? 22 : 29)
+                            font.letterSpacing: window.compactHeight ? 6 : 10
+                            background: null
+                            cursorDelegate: Rectangle {
+                                width: 2
+                                radius: 1
+                                color: window.accentInk
+                                opacity: pin.length < pin.maximumLength ? 1 : 0
+                            }
+                            Accessible.name: "四位数字 PIN"
+                        }
                     }
                 }
 
@@ -762,11 +991,23 @@ ApplicationWindow {
                     }
                 }
 
-                GlassButton {
+                GridLayout {
                     Layout.fillWidth: true
-                    objectName: "velora-special-fields-button"
-                    text: "打开邮箱与 PIN 字段"
-                    onClicked: window.openPage("fields", email)
+                    columns: settingsView.width < 285 && preferences.textScale > 1 ? 1 : 2
+                    columnSpacing: 6
+                    rowSpacing: 5
+                    GlassButton {
+                        Layout.fillWidth: true
+                        objectName: "velora-special-fields-button"
+                        text: "邮箱输入示例"
+                        onClicked: window.openPage("fields", email)
+                    }
+                    GlassButton {
+                        Layout.fillWidth: true
+                        objectName: "velora-secure-example-button"
+                        text: "PIN 输入示例"
+                        onClicked: window.openPage("pin", pin)
+                    }
                 }
             }
         }

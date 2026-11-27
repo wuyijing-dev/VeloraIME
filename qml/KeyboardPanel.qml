@@ -74,19 +74,23 @@ Item {
     readonly property bool canCompose: chinese && !sensitiveSession && inputMode === "text"
     readonly property bool canUseTools: !sensitiveSession && !numeric
     readonly property bool hasCandidates: !sensitiveSession && controller.candidates.length > 0
+    readonly property bool securePad: sensitiveSession && inputMode === "number"
+    readonly property bool pinyinHeader: canCompose && !panelState.searchingEmoji
+    readonly property bool explicitReturn: ["Enter", "Return", "回车", "换行", ""].indexOf(controller.enterLabel) < 0
     readonly property bool shiftOn: panelState.shift !== "off"
     readonly property bool isNine: canCompose && controller.pinyinMode === "t9"
     readonly property bool canSwipe: swipeEnabled && activeSession && !sensitiveSession && locale.indexOf("en") === 0 && inputMode === "text" && panelState.page === "letters" && panelState.tray === "" && !panelState.showAllCandidates && !panelState.alternateAnchor
     readonly property bool largePortrait: width >= 720 && root.Window.window !== null && root.Window.window.height > root.Window.window.width * 1.12
     readonly property real physicalRowHeight: Screen.pixelDensity >= 3 && Screen.pixelDensity <= 18 ? Math.round(Screen.pixelDensity * 7.2) : 0
     readonly property bool compactPanel: width < 520
-    readonly property real surfaceMargin: compactPanel ? 6 : 8
-    readonly property real sidePadding: compactPanel ? 11 : 17
-    readonly property real headerHeight: largePortrait ? 58 : 52
-    readonly property real preferredKeyHeight: largePortrait ? Math.min(88, Math.max(64, physicalRowHeight, Math.round(width / 14))) : Math.min(61, Math.max(compactPanel ? 50 : 48, physicalRowHeight, Math.round(width / 16)))
+    readonly property real surfaceMargin: compactPanel ? 4 : 8
+    readonly property real sidePadding: securePad ? 18 : (compactPanel ? 11 : 17)
+    readonly property real headerHeight: securePad ? 0 : (pinyinHeader ? 68 : 47)
+    readonly property real utilityHeight: canUseTools ? 46 : 0
+    readonly property real preferredKeyHeight: securePad ? 62 : (largePortrait ? Math.min(88, Math.max(64, physicalRowHeight, Math.round(width / 14))) : Math.min(61, Math.max(compactPanel ? 52 : 48, physicalRowHeight, Math.round(width / 16))))
     readonly property var keyRows: {
         if (numeric)
-            return KeyLayouts.numbers(inputMode);
+            return KeyLayouts.numbers(inputMode, securePad, explicitReturn);
         if (panelState.searchingEmoji)
             return KeyLayouts.letters(false, "text");
         if (panelState.page !== "letters")
@@ -98,7 +102,7 @@ Item {
     readonly property var visibleEmoji: KeyLayouts.emojiKeys(panelState.emojiCategory, panelState.emojiQuery, controller.recentEmoji || [])
 
     implicitWidth: 700
-    implicitHeight: headerHeight + 4 * preferredKeyHeight + 28 + Math.max(0, safeAreaInsets.y) + Math.max(0, safeAreaInsets.w)
+    implicitHeight: headerHeight + utilityHeight + 4 * preferredKeyHeight + 27 + Math.max(0, safeAreaInsets.y) + Math.max(0, safeAreaInsets.w)
     Accessible.name: qsTr("触摸键盘")
 
     SystemPalette {
@@ -108,6 +112,7 @@ Item {
     GlassTheme {
         id: glass
         dark: root.dark
+        securePad: root.securePad
         highContrast: root.highContrast
         reduceMotion: root.reduceMotion
         fontScale: Math.max(0.9, Math.min(root.fontScale, 1.8))
@@ -184,6 +189,9 @@ Item {
             break;
         case "language":
             root.changeLanguage();
+            break;
+        case "dismiss":
+            root.closePanel();
             break;
         case "symbol":
         case "extended":
@@ -284,6 +292,8 @@ Item {
             return qsTr("光标向右");
         case "language":
             return qsTr("切换中文和英文");
+        case "dismiss":
+            return qsTr("隐藏键盘");
         case "enter":
             return panelState.searchingEmoji ? qsTr("查看结果") : controller.enterLabel;
         default:
@@ -370,128 +380,189 @@ Item {
 
         Item {
             id: header
+            objectName: "keyboardContext"
             width: parent.width
             height: root.headerHeight
+            visible: !root.securePad
 
-            Keycap {
-                id: languageKey
-                objectName: "keyboardLanguage"
-                theme: glass
-                width: root.controller.preedit.length > 0 ? Math.min(134, Math.max(66, header.width / 5)) : 52
-                height: parent.height
-                label: root.controller.preedit || (root.numeric ? "123" : (root.chinese ? (root.locale === "zh-TW" ? "繁" : "拼") : (root.locale === "en-GB" ? "EN UK" : "EN")))
-                icon: root.controller.sensitive ? "privacy" : ""
-                accessibleLabel: root.controller.sensitive ? qsTr("隐私输入") : (root.controller.preedit || qsTr("输入语言"))
-                secondary: true
-                transparentRest: false
-                visualRadius: 24
-                verticalGap: 8
-                enabled: root.controller.active && !root.numeric && !root.controller.sensitive
-                hasAlternates: false
-                onActivated: root.changeLanguage()
+            Rectangle {
+                anchors.fill: parent
+                radius: 24
+                color: glass.toolbarFill
+                border.color: root.highContrast ? glass.keyBorder : glass.keyRim
+                border.width: root.highContrast ? 2 : 1
+                antialiasing: true
+            }
+
+            Text {
+                objectName: "keyboardPreedit"
+                x: 20
+                y: 2
+                width: parent.width - 40
+                height: 22
+                visible: root.pinyinHeader && root.controller.preedit.length > 0
+                text: root.sensitiveSession ? "" : root.controller.preedit
+                color: glass.textSecondary
+                font.pixelSize: Math.round(16 * glass.fontScale)
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+                Accessible.name: text
+            }
+
+            Item {
+                id: candidateStrip
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 46
+
+                Keycap {
+                    id: languageKey
+                    objectName: "keyboardLanguage"
+                    theme: glass
+                    width: Math.min(114, parent.width * 0.5)
+                    height: parent.height
+                    label: root.numeric ? qsTr("数字") : (root.chinese ? (root.locale === "zh-TW" ? qsTr("繁體拼音") : qsTr("简体拼音")) : (root.locale === "en-GB" ? "English UK" : "English"))
+                    icon: root.sensitiveSession ? "privacy" : ""
+                    accessibleLabel: root.sensitiveSession ? qsTr("隐私输入") : qsTr("切换输入语言，当前 %1").arg(label)
+                    secondary: true
+                    transparentRest: true
+                    visualRadius: 24
+                    verticalGap: 8
+                    visible: !root.hasCandidates && !panelState.searchingEmoji
+                    enabled: root.controller.active && !root.numeric && !root.sensitiveSession
+                    onActivated: root.changeLanguage()
+                }
+
+                Keycap {
+                    id: expandKey
+                    objectName: "keyboardExpandCandidates"
+                    theme: glass
+                    anchors.right: contextClose.left
+                    width: visible ? 44 : 0
+                    height: parent.height
+                    visible: root.hasCandidates && !panelState.searchingEmoji
+                    icon: panelState.showAllCandidates ? "collapse" : "right"
+                    accessibleLabel: panelState.showAllCandidates ? qsTr("收起候选") : qsTr("展开候选")
+                    secondary: true
+                    transparentRest: true
+                    onActivated: panelState.showAllCandidates = !panelState.showAllCandidates
+                }
+
+                Keycap {
+                    id: contextClose
+                    objectName: "hideKeyboardNumeric"
+                    theme: glass
+                    anchors.right: parent.right
+                    width: visible ? 44 : 0
+                    height: parent.height
+                    visible: root.utilityHeight === 0
+                    icon: "close"
+                    accessibleLabel: qsTr("隐藏键盘")
+                    secondary: true
+                    transparentRest: true
+                    onActivated: root.closePanel()
+                }
+
+                ListView {
+                    id: candidateList
+                    objectName: "keyboardCandidates"
+                    anchors.left: parent.left
+                    anchors.leftMargin: 4
+                    anchors.right: expandKey.left
+                    anchors.rightMargin: 3
+                    height: parent.height
+                    clip: true
+                    visible: root.hasCandidates && !panelState.searchingEmoji
+                    model: visible ? root.controller.candidates : []
+                    orientation: ListView.Horizontal
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    delegate: Keycap {
+                        id: candidate
+                        required property var modelData
+                        required property int index
+                        theme: glass
+                        width: Math.min(candidateList.width, Math.max(candidateList.width / 3, labelMetrics.width + 22))
+                        height: candidateList.height
+                        label: modelData.text
+                        accessibleLabel: qsTr("候选 %1，%2").arg(index + 1).arg(label)
+                        fontSize: root.chinese ? 20 : 18
+                        transparentRest: true
+                        selected: root.chinese && index === 0
+                        visualRadius: 20
+                        verticalGap: 8
+                        highlighted: panelState.keyboardCandidate === index
+                        preferScroll: true
+                        onActivated: root.chooseCandidate(modelData.id)
+
+                        Rectangle {
+                            visible: candidate.index + 1 < candidateList.count
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            height: 20
+                            width: 1
+                            color: glass.toolbarDivider
+                        }
+
+                        TextMetrics {
+                            id: labelMetrics
+                            text: candidate.label
+                            font.pixelSize: Math.round(candidate.fontSize * glass.fontScale)
+                        }
+                    }
+                }
+
+                Text {
+                    anchors.centerIn: candidateList
+                    visible: panelState.searchingEmoji
+                    text: panelState.emojiQuery || qsTr("输入名称，按回车查看")
+                    color: glass.textPrimary
+                    font.pixelSize: Math.round(14 * glass.fontScale)
+                    width: Math.max(0, candidateList.width - 18)
+                    elide: Text.ElideRight
+                }
+            }
+        }
+
+        Item {
+            id: utilityRail
+            objectName: "keyboardUtility"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: root.utilityHeight
+            visible: height > 0
+
+            Rectangle {
+                anchors.fill: parent
+                radius: height / 2
+                color: glass.toolbarFill
+                border.color: root.highContrast ? glass.keyBorder : glass.keyRim
+                border.width: root.highContrast ? 2 : 1
+                antialiasing: true
             }
 
             Keycap {
-                id: closeKey
+                id: utilityClose
                 objectName: "hideKeyboard"
                 theme: glass
                 anchors.right: parent.right
-                width: 48
+                width: 44
                 height: parent.height
                 icon: "close"
                 accessibleLabel: qsTr("隐藏键盘")
                 secondary: true
-                visualRadius: 24
-                verticalGap: 8
+                transparentRest: true
                 onActivated: root.closePanel()
-            }
-
-            Keycap {
-                id: expandKey
-                theme: glass
-                anchors.right: closeKey.left
-                width: visible ? 44 : 0
-                height: parent.height
-                visible: root.hasCandidates
-                icon: panelState.showAllCandidates ? "collapse" : "expand"
-                accessibleLabel: panelState.showAllCandidates ? qsTr("收起候选") : qsTr("展开候选")
-                secondary: true
-                visualRadius: 24
-                verticalGap: 8
-                onActivated: panelState.showAllCandidates = !panelState.showAllCandidates
-            }
-
-            Rectangle {
-                x: candidateList.x + 2
-                y: 4
-                width: Math.max(0, candidateList.width - 4)
-                height: parent.height - 8
-                radius: height / 2
-                visible: candidateList.visible || panelState.searchingEmoji
-                color: glass.toolbarFill
-                border.width: root.highContrast ? 2 : 1
-                border.color: glass.keyBorder
-                antialiasing: true
-            }
-
-            ListView {
-                id: candidateList
-                anchors.left: languageKey.right
-                anchors.leftMargin: 3
-                anchors.right: expandKey.left
-                anchors.rightMargin: 3
-                height: parent.height
-                clip: true
-                visible: root.hasCandidates
-                model: visible ? root.controller.candidates : []
-                orientation: ListView.Horizontal
-                boundsBehavior: Flickable.StopAtBounds
-
-                delegate: Keycap {
-                    id: candidate
-                    required property var modelData
-                    required property int index
-                    theme: glass
-                    width: Math.min(candidateList.width, Math.max(54, labelMetrics.width + 22))
-                    height: candidateList.height
-                    label: modelData.text
-                    accessibleLabel: qsTr("候选 %1，%2").arg(index + 1).arg(label)
-                    fontSize: 18
-                    transparentRest: true
-                    selected: index === 0
-                    visualRadius: 22
-                    verticalGap: 13
-                    highlighted: panelState.keyboardCandidate === index
-                    preferScroll: true
-                    onActivated: root.chooseCandidate(modelData.id)
-
-                    TextMetrics {
-                        id: labelMetrics
-                        text: candidate.label
-                        font.pixelSize: Math.round(18 * glass.fontScale)
-                    }
-                }
-            }
-
-            Rectangle {
-                x: toolbar.x + Math.max(2, (toolbar.width - width) / 2)
-                y: 4
-                width: Math.max(0, Math.min(toolbar.width - 4, toolButtons.width + 4))
-                height: parent.height - 8
-                radius: height / 2
-                visible: toolbar.visible
-                color: glass.toolbarFill
-                border.width: root.highContrast ? 2 : 1
-                border.color: glass.keyBorder
-                antialiasing: true
             }
 
             Flickable {
                 id: toolbar
-                anchors.left: languageKey.right
-                anchors.right: closeKey.left
+                anchors.left: parent.left
+                anchors.right: utilityClose.left
                 height: parent.height
-                visible: (!root.hasCandidates || root.listening) && !root.numeric && !root.controller.sensitive && !panelState.searchingEmoji
+                visible: utilityRail.visible
                 contentWidth: Math.max(width, toolButtons.width)
                 boundsBehavior: Flickable.StopAtBounds
                 clip: true
@@ -506,7 +577,7 @@ Item {
                         theme: glass
                         width: 44
                         height: parent.height
-                        icon: "layout"
+                        icon: "globe"
                         accessibleLabel: qsTr("输入布局")
                         secondary: true
                         transparentRest: true
@@ -602,24 +673,14 @@ Item {
                     }
                 }
             }
-
-            Text {
-                anchors.centerIn: candidateList
-                visible: panelState.searchingEmoji
-                text: panelState.emojiQuery || qsTr("输入名称，按回车查看")
-                color: glass.textPrimary
-                font.pixelSize: Math.round(14 * glass.fontScale)
-                width: Math.max(0, candidateList.width - 12)
-                elide: Text.ElideRight
-            }
         }
 
         Item {
             id: keysArea
             width: Math.min(parent.width, root.oneHanded ? Math.max(330, parent.width * 0.62) : 960)
             x: root.alignment === "left" ? 0 : (root.alignment === "right" ? parent.width - width : (parent.width - width) / 2)
-            y: header.height + 6
-            height: Math.max(0, parent.height - y)
+            y: header.height + (root.securePad ? 3 : 7)
+            height: Math.max(0, parent.height - y - root.utilityHeight - (root.utilityHeight > 0 ? 5 : 0))
             visible: !panelState.showAllCandidates && (panelState.tray === "" || panelState.searchingEmoji)
             enabled: root.controller.active && (!panelState.alternateAnchor || panelState.alternateTracking)
 
@@ -650,7 +711,7 @@ Item {
                                     id: key
                                     required property var modelData
                                     readonly property bool isFunction: modelData.action !== "text"
-                                    readonly property bool namedEnterAction: modelData.action === "enter" && root.controller.enterLabel !== "" && root.controller.enterLabel !== qsTr("回车")
+                                    readonly property bool namedEnterAction: modelData.action === "enter" && root.explicitReturn
                                     readonly property var alternates: KeyLayouts.alternatives(modelData, !root.canCompose || panelState.searchingEmoji, root.shiftOn)
                                     objectName: "key-" + modelData.action + (modelData.action === "text" ? "-" + modelData.label : "")
                                     theme: glass
@@ -658,17 +719,20 @@ Item {
                                     height: keyRow.height
                                     label: namedEnterAction && width >= 56 ? root.controller.enterLabel : (!isFunction && root.shiftOn ? modelData.label.toUpperCase() : modelData.label)
                                     gestureLetter: /^[a-z]$/.test(modelData.label) ? label : ""
-                                    detail: modelData.detail || ""
+                                    detail: modelData.nine ? modelData.detail : ""
                                     detailBelow: modelData.nine === true
                                     icon: namedEnterAction && width >= 56 ? "" : (modelData.action === "shift" && panelState.shift === "caps" ? "caps" : modelData.icon || "")
                                     accessibleLabel: isFunction || modelData.accessibleLabel ? root.keyName(modelData) : label
                                     accent: modelData.action === "enter"
                                     selected: modelData.action === "shift" && root.shiftOn
                                     secondary: isFunction
-                                    fontSize: isFunction ? (root.largePortrait ? 17 : 15) : (root.largePortrait ? 26 : 22)
+                                    prominentLabel: root.securePad
+                                    iconSize: root.securePad ? 34 : (isFunction ? 25 : 24)
+                                    fontSize: root.securePad ? 34 : (isFunction ? (root.largePortrait ? 17 : 16) : (root.largePortrait ? 26 : 23))
                                     highlighted: swipeDrag.active && gestureLetter !== "" && gestureLetter === swipeZone.path.slice(-1)
-                                    visualGap: root.compactPanel ? 4 : 5
-                                    visualRadius: isFunction && (modelData.action === "space" || modelData.action === "enter") ? 20 : (isFunction ? 14 : 11)
+                                    visualGap: root.securePad ? 7 : (root.compactPanel ? 4 : 5)
+                                    verticalGap: root.securePad ? 7 : 8
+                                    visualRadius: root.securePad ? 15 : (isFunction ? 14 : 10)
                                     repeats: modelData.action === "backspace"
                                     hasAlternates: alternates.length > 0
                                     cursorDrag: modelData.action === "space" && !panelState.searchingEmoji && !root.controller.sensitive
@@ -688,6 +752,10 @@ Item {
                                             root.alternatePosition(position);
                                     }
                                     onHoldReleased: root.releaseAlternate(key)
+                                    onHoldCanceled: {
+                                        if (panelState.alternateAnchor === key)
+                                            root.clearAlternates();
+                                    }
                                 }
                             }
                         }
@@ -738,6 +806,7 @@ Item {
 
                 DragHandler {
                     id: swipeDrag
+                    enabled: root.canSwipe
                     target: null
                     minimumPointCount: 1
                     maximumPointCount: 1
@@ -790,7 +859,7 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: keysArea.top
-            anchors.bottom: parent.bottom
+            anchors.bottom: keysArea.bottom
             visible: panelState.showAllCandidates && root.hasCandidates
             clip: true
             boundsBehavior: Flickable.StopAtBounds
@@ -815,7 +884,7 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: keysArea.top
-            anchors.bottom: parent.bottom
+            anchors.bottom: keysArea.bottom
             visible: panelState.tray !== "" && !panelState.searchingEmoji && !panelState.showAllCandidates
 
             Flow {
