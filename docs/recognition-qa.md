@@ -54,6 +54,8 @@ export LD_LIBRARY_PATH="/usr/local/qt6.12.0/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_P
 
 `ctest --test-dir build/host -R velora.word_packs --output-on-failure` 在主机启动临时 HTTPS 服务。它用临时发布键签发样包，验证 ETag、关闭联网时零请求、忽略 Cookie、拒绝坏签名/摘要、安装版本回退、高水位、受损缓存时的启动恢复及热词到期后停止暴露候选。
 
+2026 年 11 月 27 日，另从 GitHub Pages 下载了公开词库和热词的第 2 版，使用应用内置生产公钥验证签名，并核对词包长度、SHA-256 与有效期。 [发布记录](https://github.com/wuyijing-dev/VeloraIME/actions/runs/45996790508)
+
 需在板端复测纯数据路径时，先交叉构建 `packs/tests`，在主机用 `python3 packs/tests/run_tests.py --fixtures-only /tmp/velora-pack-fixtures` 生成测试数据。将测试数据与 ARM64 的 `velora_word_pack_tests` 放到板端临时目录。运行下面的场景只读本地测试词包，缓存写入各自的临时目录。短期时效词在主机端的完整 CTest 中验证。
 
 ```sh
