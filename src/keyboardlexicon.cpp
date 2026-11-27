@@ -328,12 +328,14 @@ void KeyboardLexicon::loadChinese()
         return;
     m_chineseLoaded = true;
 
-    QHash<QString, int> frequencies;
-    QSet<QString> explicitWords;
+    // Keep one backing buffer for the temporary frequency index.
+    QString essayText;
+    QHash<QStringView, int> frequencies;
+    QList<ChineseWord> words;
+    QSet<QStringView> explicitWords;
     QHash<uint, QString> unambiguous;
     QSet<uint> polyphonic;
     QFile dictionary(lexiconPath(u"luna.dict.yaml"_s));
-    QList<ChineseWord> words;
     if (dictionary.open(QIODevice::ReadOnly)) {
         bool entries = false;
         while (!dictionary.atEnd()) {
@@ -362,27 +364,28 @@ void KeyboardLexicon::loadChinese()
                 }
             }
             words.append({text, spelling, fields.size() > 2 ? fields[2].toInt() : 0});
-            frequencies.insert(text, 0);
             explicitWords.insert(text);
         }
     }
 
     QStringList phraseSeeds;
     QFile priors(lexiconPath(u"essay.txt"_s));
-    if (priors.open(QIODevice::ReadOnly)) {
-        while (!priors.atEnd()) {
-            const QByteArray row = priors.readLine();
-            const qsizetype separator = row.indexOf('\t');
-            if (separator < 0)
-                continue;
-            const QString text = QString::fromUtf8(row.constData(), separator);
-            const int frequency = row.mid(separator + 1).trimmed().toInt();
-            if (frequency >= 100 || explicitWords.contains(text))
-                frequencies.insert(text, frequency);
-            if (frequency >= 1500 && text.size() >= 2 && text.size() <= 16
-                && !explicitWords.contains(text))
-                phraseSeeds.append(text);
-        }
+    if (priors.open(QIODevice::ReadOnly))
+        essayText = QString::fromUtf8(priors.readAll());
+    for (QStringView rows(essayText); !rows.isEmpty();) {
+        const qsizetype nextLine = rows.indexOf(u'\n');
+        const QStringView row = nextLine < 0 ? rows : rows.first(nextLine);
+        rows = nextLine < 0 ? QStringView{} : rows.sliced(nextLine + 1);
+        const qsizetype separator = row.indexOf(u'\t');
+        if (separator < 0)
+            continue;
+        const QStringView text = row.first(separator);
+        const int frequency = row.sliced(separator + 1).trimmed().toInt();
+        if (frequency >= 100 || explicitWords.contains(text))
+            frequencies.insert(text, frequency);
+        if (frequency >= 1500 && text.size() >= 2 && text.size() <= 16
+            && !explicitWords.contains(text))
+            phraseSeeds.append(text.toString());
     }
 
     auto loadConversions = [this](const QString &path) {
@@ -438,6 +441,7 @@ void KeyboardLexicon::loadChinese()
         if (scalars.size() >= 2 && scalars.size() <= 8 && spelling.size() == scalars.size())
             words.append({phrase, spelling.join(u' '), frequencies.value(phrase)});
     }
+    explicitWords.clear();
     for (ChineseWord &word : words) {
         const int frequency = std::max(word.score, frequencies.value(word.text));
         const int syllables = int(word.spelling.count(u' ')) + 1;
@@ -452,7 +456,7 @@ void KeyboardLexicon::loadChinese()
         return left.text == right.text && left.spelling == right.spelling;
     }), words.end());
     for (auto it = frequencies.cbegin(); it != frequencies.cend(); ++it) {
-        const QString &pair = it.key();
+        const QStringView pair = it.key();
         if (pair.size() != 2 || pair.front().isHighSurrogate() || it.value() < 100)
             continue;
         const int together = scoreFrequency(it.value());
@@ -518,30 +522,35 @@ int KeyboardLexicon::englishScore(const QString &word, const QString &language) 
     return score(word) + (language == u"en-US" && britishSpellings().contains(word) ? 28 : 0);
 }
 
-const QList<KeyboardLexicon::IndexEntry> &KeyboardLexicon::index(const QString &mode)
+const KeyboardLexicon::ChineseIndex &KeyboardLexicon::index(const QString &mode)
 {
     auto found = m_indices.constFind(mode);
     if (found != m_indices.cend())
         return found.value();
 
-    QList<IndexEntry> entries;
-    entries.reserve(m_chinese.size());
+    ChineseIndex result;
+    result.entries.reserve(m_chinese.size());
     for (qsizetype i = 0; i < m_chinese.size(); ++i) {
         const QString &spelling = m_chinese.at(i).spelling;
-        auto encoded = encode(spelling, mode);
-        if (!encoded.code.isEmpty())
-            entries.append({std::move(encoded.code), encoded.boundaries, i});
+        const auto encoded = encode(spelling, mode);
+        if (encoded.code.isEmpty())
+            continue;
+        const QByteArray code = encoded.code.toLatin1();
+        result.entries.append({encoded.boundaries, i, result.codes.size(), code.size()});
+        result.codes.append(code);
     }
-    std::sort(entries.begin(), entries.end(), [this](const IndexEntry &a, const IndexEntry &b) {
-        if (a.code != b.code)
-            return a.code < b.code;
+    std::sort(result.entries.begin(), result.entries.end(), [this, &result](const IndexEntry &a, const IndexEntry &b) {
+        const QByteArrayView aCode = result.code(a);
+        const QByteArrayView bCode = result.code(b);
+        if (aCode != bCode)
+            return aCode < bCode;
         const auto &lhs = m_chinese.at(a.word);
         const auto &rhs = m_chinese.at(b.word);
         if (lhs.score != rhs.score)
             return lhs.score > rhs.score;
         return std::tie(lhs.text, lhs.spelling) < std::tie(rhs.text, rhs.spelling);
     });
-    return m_indices.insert(mode, std::move(entries)).value();
+    return m_indices.insert(mode, std::move(result)).value();
 }
 
 QString KeyboardLexicon::simplify(const QString &text) const
@@ -597,7 +606,14 @@ QList<KeyboardCandidate> KeyboardLexicon::chineseCandidates(const KeyboardQuery 
     if (input.isEmpty())
         return {};
 
-    const auto &entries = index(query.pinyinMode);
+    const auto &searchIndex = index(query.pinyinMode);
+    const auto &entries = searchIndex.entries;
+    auto findCode = [&](QByteArrayView key) {
+        return std::lower_bound(entries.cbegin(), entries.cend(), key,
+                                [&searchIndex](const IndexEntry &entry, QByteArrayView code) {
+            return searchIndex.code(entry) < code;
+        });
+    };
     const bool traditional = query.language == u"zh-TW";
     auto matches = [&](qsizetype start, qsizetype end, bool prefix = false) {
         QList<KeyboardCandidate> words;
@@ -615,14 +631,13 @@ QList<KeyboardCandidate> KeyboardLexicon::chineseCandidates(const KeyboardQuery 
                           500 + word.score - deduction});
         };
         auto seek = [&](const QString &code, bool allowPrefix, int deduction) {
-            auto found = std::lower_bound(entries.cbegin(), entries.cend(), code,
-                                          [](const IndexEntry &entry, const QString &value) {
-                return entry.code < value;
-            });
+            const QByteArray key = code.toLatin1();
+            auto found = findCode(key);
             for (qsizetype count = 0; found != entries.cend() && count < 1200; ++found, ++count) {
-                if (allowPrefix ? !found->code.startsWith(code) : found->code != code)
+                const QByteArrayView foundCode = searchIndex.code(*found);
+                if (allowPrefix ? !foundCode.startsWith(key) : foundCode != key)
                     break;
-                append(*found, deduction + (allowPrefix ? 9 * int(found->code.size() - code.size()) : 0));
+                append(*found, deduction + (allowPrefix ? 9 * int(foundCode.size() - key.size()) : 0));
             }
         };
         seek(key, prefix, prefix ? 360 : 0);
@@ -690,12 +705,10 @@ QList<KeyboardCandidate> KeyboardLexicon::chineseCandidates(const KeyboardQuery 
         if (query.pinyinMode != u"double")
             return false;
         // Publishers may supply compact pinyin instead of a syllable-separated code.
-        const auto known = std::lower_bound(entries.cbegin(), entries.cend(), input,
-                                            [](const IndexEntry &entry, const QString &value) {
-            return entry.code < value;
-        });
+        const QByteArray key = input.toLatin1();
+        const auto known = findCode(key);
         const QString compact = QString(code).remove(u' ');
-        for (auto i = known; i != entries.cend() && i->code == input; ++i) {
+        for (auto i = known; i != entries.cend() && searchIndex.code(*i) == key; ++i) {
             if (QString(m_chinese.at(i->word).spelling).remove(u' ') == compact)
                 return true;
         }

@@ -64,9 +64,19 @@ private:
         int score;
     };
     struct IndexEntry {
-        QString code;
         quint64 boundaries = 0;
         qsizetype word = 0;
+        qsizetype offset = 0;
+        qsizetype length = 0;
+    };
+    struct ChineseIndex {
+        QByteArray codes;
+        QList<IndexEntry> entries;
+
+        QByteArrayView code(const IndexEntry &entry) const
+        {
+            return QByteArrayView(codes).sliced(entry.offset, entry.length);
+        }
     };
     struct PersonalWord {
         QString locale;
@@ -79,7 +89,7 @@ private:
 
     void loadChinese();
     void loadEnglish();
-    const QList<IndexEntry> &index(const QString &mode);
+    const ChineseIndex &index(const QString &mode);
     QString simplify(const QString &text) const;
     int englishScore(const QString &word, const QString &language) const;
     QList<KeyboardCandidate> chineseCandidates(const KeyboardQuery &query);
@@ -90,7 +100,7 @@ private:
     void closeProfile();
 
     QList<ChineseWord> m_chinese;
-    QHash<QString, QList<IndexEntry>> m_indices;
+    QHash<QString, ChineseIndex> m_indices;
     QHash<QString, QString> m_simplified;
     QHash<quint32, int> m_boundaryScores;
     qsizetype m_maxPhraseLength = 1;

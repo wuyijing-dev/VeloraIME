@@ -1,13 +1,21 @@
 #include "../lexiconpackmanager.h"
 #include "../lexiconpackstore_p.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QProcess>
 #include <QSslCertificate>
 #include <QSslConfiguration>
 #include <QSslSocket>
 #include <QTemporaryDir>
 #include <QTest>
+
+#if defined(Q_OS_LINUX)
+#  include <csignal>
+#  include <sys/resource.h>
+#endif
 
 using Velora::LexiconPackManager;
 using namespace Velora::Packs;
@@ -34,6 +42,51 @@ void configureManager(LexiconPackManager &manager, const QString &storage)
     manager.setTrustedKeys({{"test-1", publicKey()}});
 }
 
+QByteArray bytesAt(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return file.readAll();
+}
+
+#if defined(Q_OS_LINUX)
+using SignalHandler = void (*)(int);
+
+class FileSizeLimit
+{
+public:
+    explicit FileSizeLimit(SignalHandler handler)
+    {
+        if (getrlimit(RLIMIT_FSIZE, &m_previous) != 0 || m_previous.rlim_cur < limit
+            || m_previous.rlim_max < limit)
+            return;
+        m_previousSignal = std::signal(SIGXFSZ, handler);
+        if (m_previousSignal == SIG_ERR)
+            return;
+        auto reduced = m_previous;
+        reduced.rlim_cur = limit;
+        m_applied = setrlimit(RLIMIT_FSIZE, &reduced) == 0;
+    }
+
+    ~FileSizeLimit()
+    {
+        if (m_applied)
+            setrlimit(RLIMIT_FSIZE, &m_previous);
+        if (m_previousSignal != SIG_ERR)
+            std::signal(SIGXFSZ, m_previousSignal);
+    }
+
+    explicit operator bool() const { return m_applied; }
+    static constexpr rlim_t limit = 4096;
+
+private:
+    rlimit m_previous{};
+    SignalHandler m_previousSignal = SIG_ERR;
+    bool m_applied = false;
+};
+#endif
+
 } // namespace
 
 class PackTests : public QObject
@@ -44,6 +97,8 @@ private slots:
     void validatesImportAndRollback();
     void managerExposesVerifiedSnapshot();
     void recoversVerifiedPreviousVersionOnRestart();
+    void preservesSnapshotOnPartialWriteFailure();
+    void recoversAfterUpdaterTerminatesMidWrite();
     void stopsExposingExpiredEntries();
     void updatesOverHttps();
 };
@@ -154,6 +209,102 @@ void PackTests::recoversVerifiedPreviousVersionOnRestart()
     QVERIFY(!importDirectory(config, input.filePath(QStringLiteral("second"))).error.isEmpty());
 }
 
+void PackTests::preservesSnapshotOnPartialWriteFailure()
+{
+#if defined(Q_OS_LINUX)
+    QTemporaryDir installed;
+    QVERIFY(installed.isValid());
+    const auto input = fixtures();
+    const auto update = QDir(input.filePath(QStringLiteral("large-update")));
+    const auto versionOne = QUrl::fromLocalFile(input.filePath(QStringLiteral("first")));
+    const auto versionThree = QUrl::fromLocalFile(update.path());
+    const QDir cache(QDir(installed.path()).filePath(QStringLiteral("test-zh")));
+    const auto statePath = cache.filePath(QStringLiteral("state.json"));
+    const auto manifest = bytesAt(update.filePath(QStringLiteral("manifest.json")));
+    QVERIFY(!manifest.isEmpty() && manifest.size() < qint64(FileSizeLimit::limit));
+    QVERIFY(QFileInfo(update.filePath(QStringLiteral("pack-3.json"))).size()
+            > qint64(FileSizeLimit::limit));
+
+    LexiconPackManager manager;
+    configureManager(manager, installed.path());
+    QTRY_VERIFY_WITH_TIMEOUT(!manager.busy(), 3000);
+    manager.importDirectory(versionOne);
+    QTRY_COMPARE_WITH_TIMEOUT(manager.activeVersion(), 1, 3000);
+    const auto originalEntries = manager.entries();
+    QVERIFY(!originalEntries.isEmpty());
+    const auto originalState = bytesAt(statePath);
+    QVERIFY(!originalState.isEmpty());
+
+    {
+        // QSaveFile commits the small manifest but the kernel rejects the rest of the payload.
+        const FileSizeLimit boundedStorage(SIG_IGN);
+        QVERIFY2(bool(boundedStorage), "Could not set a process-local file size limit");
+        manager.importDirectory(versionThree);
+        QTRY_VERIFY_WITH_TIMEOUT(!manager.busy(), 3000);
+        QCOMPARE(manager.lastError(), QStringLiteral("Could not save pack"));
+        QCOMPARE(manager.activeVersion(), 1);
+        QCOMPARE(manager.entries(), originalEntries);
+        QCOMPARE(bytesAt(cache.filePath(QStringLiteral("v3.manifest"))), manifest);
+        QVERIFY(!cache.exists(QStringLiteral("v3.pack")));
+        QCOMPARE(bytesAt(statePath), originalState);
+
+        LexiconPackManager restarted;
+        configureManager(restarted, installed.path());
+        QTRY_COMPARE_WITH_TIMEOUT(restarted.activeVersion(), 1, 3000);
+        QCOMPARE(restarted.entries(), originalEntries);
+    }
+
+    manager.importDirectory(versionThree);
+    QTRY_COMPARE_WITH_TIMEOUT(manager.activeVersion(), 3, 3000);
+    QCOMPARE(manager.previousVersion(), 1);
+    QVERIFY(manager.entries() != originalEntries);
+    QVERIFY(manager.lastError().isEmpty());
+#else
+    QSKIP("This scenario uses the Linux file size limit");
+#endif
+}
+
+void PackTests::recoversAfterUpdaterTerminatesMidWrite()
+{
+#if defined(Q_OS_LINUX)
+    QTemporaryDir installed;
+    QVERIFY(installed.isValid());
+    const auto input = fixtures();
+    const QDir cache(QDir(installed.path()).filePath(QStringLiteral("test-zh")));
+    const QString stagedUpdate = input.filePath(QStringLiteral("large-update"));
+    const auto statePath = cache.filePath(QStringLiteral("state.json"));
+    const Config config{installed.path(), QStringLiteral("test-zh"), {{"test-1", publicKey()}}};
+    const auto first = importDirectory(config, input.filePath(QStringLiteral("first")));
+    QVERIFY2(first.error.isEmpty(), qPrintable(first.error));
+    const auto originalState = bytesAt(statePath);
+    QVERIFY(!originalState.isEmpty());
+
+    QProcess updater;
+    updater.start(QCoreApplication::applicationFilePath(),
+                  {QStringLiteral("--interrupted-import"), installed.path(), stagedUpdate});
+    QVERIFY(updater.waitForStarted());
+    QVERIFY(updater.waitForFinished(5000));
+    QCOMPARE(updater.exitStatus(), QProcess::CrashExit);
+    QCOMPARE(updater.exitCode(), SIGXFSZ);
+    QCOMPARE(bytesAt(cache.filePath(QStringLiteral("v3.manifest"))),
+             bytesAt(QDir(stagedUpdate).filePath(QStringLiteral("manifest.json"))));
+    QVERIFY(!cache.exists(QStringLiteral("v3.pack")));
+    QCOMPARE(bytesAt(statePath), originalState);
+
+    LexiconPackManager restarted;
+    configureManager(restarted, installed.path());
+    QTRY_COMPARE_WITH_TIMEOUT(restarted.activeVersion(), 1, 3000);
+    QCOMPARE(restarted.entries(), first.entries);
+
+    restarted.importDirectory(QUrl::fromLocalFile(stagedUpdate));
+    QTRY_COMPARE_WITH_TIMEOUT(restarted.activeVersion(), 3, 3000);
+    QCOMPARE(restarted.previousVersion(), 1);
+    QVERIFY(restarted.lastError().isEmpty());
+#else
+    QSKIP("This scenario uses a fatal Linux file size signal");
+#endif
+}
+
 void PackTests::stopsExposingExpiredEntries()
 {
     QTemporaryDir installed;
@@ -230,5 +381,32 @@ void PackTests::updatesOverHttps()
     QVERIFY(!offline.enabled());
 }
 
-QTEST_GUILESS_MAIN(PackTests)
+int main(int argc, char **argv)
+{
+    QCoreApplication app(argc, argv);
+#if defined(Q_OS_LINUX)
+    const auto arguments = app.arguments();
+    if (arguments.size() == 4 && arguments.at(1) == QStringLiteral("--import-fixture")) {
+        const Config config{arguments.at(2), QStringLiteral("test-zh"), {{"test-1", publicKey()}}};
+        const auto result = importDirectory(config, arguments.at(3));
+        if (!result.error.isEmpty())
+            qWarning().noquote() << result.error;
+        return result.error.isEmpty() ? 0 : 1;
+    }
+    if (arguments.size() == 4 && arguments.at(1) == QStringLiteral("--interrupted-import")) {
+        const rlimit noCoreDump{0, 0};
+        if (setrlimit(RLIMIT_CORE, &noCoreDump) != 0)
+            return 2;
+        const FileSizeLimit boundedStorage(SIG_DFL);
+        if (!boundedStorage)
+            return 3;
+        const Config config{arguments.at(2), QStringLiteral("test-zh"), {{"test-1", publicKey()}}};
+        importDirectory(config, arguments.at(3));
+        return 4;
+    }
+#endif
+    PackTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
+
 #include "pack_tests.moc"

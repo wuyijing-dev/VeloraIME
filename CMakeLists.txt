@@ -48,6 +48,7 @@ qt_add_shaders(VeloraIME velora_glass_shader PREFIX /qt/qml/Rk/TouchKeyboard
 qt_add_resources(VeloraIME velora_lexicon
     PREFIX /velora
     BASE data/lexicon
+    OPTIONS --compress-algo zlib --compress 6 --threshold 45
     FILES
         data/lexicon/luna.dict.yaml
         data/lexicon/essay.txt

@@ -9,6 +9,7 @@ ApplicationWindow {
     visible: true
     title: "VeloraIME input test"
     required property string scenario
+    property bool loadKeyboard: true
 
     Rectangle {
         id: backdrop
@@ -52,14 +53,16 @@ ApplicationWindow {
         Accessible.name: "Test PIN"
     }
 
-    KeyboardPanel {
-        id: keyboard
-        objectName: "probeKeyboard"
+    Loader {
         anchors.bottom: parent.bottom
         width: parent.width
-        backgroundSource: backdrop
-        controller.language: probe.scenario === "pinyin" ? "zh-CN" : "en-US"
-        controller.learningEnabled: false
+        active: probe.loadKeyboard
+        sourceComponent: KeyboardPanel {
+            objectName: "probeKeyboard"
+            backgroundSource: backdrop
+            controller.language: probe.scenario === "pinyin" ? "zh-CN" : "en-US"
+            controller.learningEnabled: false
+        }
     }
 
     Component.onCompleted: {

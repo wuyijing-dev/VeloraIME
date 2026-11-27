@@ -114,6 +114,10 @@ def create_fixtures(root):
     pack("expired", 3, now - timedelta(days=2))
     pack("future", 3, now + timedelta(days=2))
     pack("bad-version-range", 3, now, "--min-client", "2", "--max-client", "3")
+    large = root / "large-entries.json"
+    large.write_text(json.dumps([{"text": f"限额测试 {number}", "pinyin": "ceshi", "weight": 20}
+                                 for number in range(800)], ensure_ascii=False), encoding="utf-8")
+    pack("large-update", 3, entries=large)
     expiring = root / "entry-expiry.json"
     expiry = now + timedelta(seconds=12)
     expiring.write_text(json.dumps([{"text": "热词", "pinyin": "reci", "weight": 20,
@@ -130,9 +134,65 @@ def create_fixtures(root):
     altered.write_bytes(altered.read_bytes().replace(b"velora", b"errorx"))
     (root / "oversize" / "pack-3.json").write_bytes(b"x" * (2 * 1024 * 1024 + 1))
 
-    offline_only = ("private.pem", "entries.json", "entry-expiry.json", "review.json", "reviewed.json")
+    offline_only = ("private.pem", "entries.json", "entry-expiry.json", "large-entries.json",
+                    "review.json", "reviewed.json")
     for name in offline_only:
         (root / name).unlink()
+
+
+def verify_state_commit_failures(binary, root):
+    tracer = shutil.which("strace")
+    if not sys.platform.startswith("linux") or not tracer:
+        return
+
+    env = {**os.environ, "VELORA_PACK_TEST_FIXTURES": str(root)}
+    with TemporaryDirectory(prefix="velora-pack-state-fault-") as directory:
+        faults = Path(directory)
+
+        def import_args(storage, version):
+            return [binary, "--import-fixture", str(storage), str(root / version)]
+
+        def trace(storage, path, injection=None):
+            options = [tracer, "-qq", "-s", "100", "-e", "trace=write", "-o", str(path)]
+            if injection:
+                options += ["-e", f"inject=write:{injection}"]
+            return subprocess.run(options + import_args(storage, "large-update"),
+                                  env=env, capture_output=True, timeout=10)
+
+        baseline = faults / "baseline"
+        subprocess.run(import_args(baseline, "first"), env=env, check=True, timeout=5)
+        baseline_trace = faults / "baseline.trace"
+        completed = trace(baseline, baseline_trace)
+        if completed.returncode and b"Operation not permitted" in completed.stderr:
+            print("Skipping strace commit fault injection because ptrace is unavailable")
+            return
+        completed.check_returncode()
+        writes = [line for line in baseline_trace.read_text().splitlines() if line.startswith("write(")]
+        commit_write = next(index for index, line in enumerate(writes, 1)
+                            if r'{\"current\":3,' in line)
+
+        for name, injection, evidence in (
+            ("storage-full", "error=ENOSPC", "ENOSPC (No space left on device) (INJECTED)"),
+            ("interrupted", "error=EINTR:signal=SIGKILL", "killed by SIGKILL"),
+        ):
+            storage = faults / name
+            subprocess.run(import_args(storage, "first"), env=env, check=True, timeout=5)
+            cache = storage / "test-zh"
+            original_state = (cache / "state.json").read_bytes()
+            original_pack = (cache / "v1.pack").read_bytes()
+            failed_trace = faults / (name + ".trace")
+            failed = trace(storage, failed_trace, f"{injection}:when={commit_write}")
+            report = failed_trace.read_text()
+            assert failed.returncode != 0 and evidence in report
+            assert r'{\"current\":3,' in report
+            assert (cache / "v3.pack").read_bytes() == (root / "large-update/pack-3.json").read_bytes()
+            assert (cache / "state.json").read_bytes() == original_state
+            assert (cache / "v1.pack").read_bytes() == original_pack
+            subprocess.run(import_args(storage, "large-update"), env=env, check=True, timeout=5)
+            assert json.loads((cache / "state.json").read_bytes()) == {
+                "current": 3, "previous": 1, "highest": 3,
+            }
+        print("State commit ENOSPC and SIGKILL preserved the previous package; both retries passed")
 
 
 def main():
@@ -150,6 +210,7 @@ def main():
     with TemporaryDirectory(prefix="velora-word-packs-test-") as directory:
         root = Path(directory)
         create_fixtures(root)
+        verify_state_commit_failures(sys.argv[1], root)
         with ThreadingHTTPServer(("127.0.0.1", 0), partial(Publisher, directory=root)) as server:
             # The server needs its private TLS key, which is not a publishing credential.
             key = root / "local-tls-key.pem"

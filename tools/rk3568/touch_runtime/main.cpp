@@ -133,7 +133,8 @@ int processPssKiB()
     return -1;
 }
 
-void startSoak(QQuickWindow *window, QQuickItem *editor, QQuickItem *pin, QObject *controller, int seconds)
+void startSoak(QQuickWindow *window, QQuickItem *editor, QQuickItem *pin, QObject *controller,
+               int seconds, int hostPss)
 {
     auto *step = new QTimer(window);
     step->setInterval(125);
@@ -222,6 +223,8 @@ void startSoak(QQuickWindow *window, QQuickItem *editor, QQuickItem *pin, QObjec
             if (now >= qint64(seconds) * 1000) {
                 step->stop();
                 qInfo("SOAK PASS: cycles=%d baseline=%d KiB peak=%d KiB", cycles, baseline, maximum);
+                if (hostPss >= 0)
+                    qInfo("KEYBOARD PSS: host=%d KiB peak=%d KiB delta=%d KiB", hostPss, maximum, maximum - hostPss);
                 QCoreApplication::quit();
             }
         }
@@ -240,7 +243,7 @@ int main(int argc, char **argv)
     QCommandLineParser parser;
     parser.addHelpOption();
     parser.addPositionalArgument(QStringLiteral("import"), QStringLiteral("Installed QML import root."));
-    parser.addPositionalArgument(QStringLiteral("scenario"), QStringLiteral("direct, pinyin, pin, or soak."));
+    parser.addPositionalArgument(QStringLiteral("scenario"), QStringLiteral("direct, pinyin, pin, soak, or memory."));
     parser.addPositionalArgument(QStringLiteral("expected"), QStringLiteral("Expected committed test text."));
     parser.addPositionalArgument(QStringLiteral("count"), QStringLiteral("Minimum touch releases, or soak seconds."));
     parser.process(app);
@@ -250,14 +253,16 @@ int main(int argc, char **argv)
     const QString scenario = arguments.at(1);
     bool countOk = false;
     const int minimumReleases = arguments.at(3).toInt(&countOk);
-    const bool soak = scenario == u"soak";
+    const bool memory = scenario == u"memory";
+    const bool soak = scenario == u"soak" || memory;
     if ((scenario != u"direct" && scenario != u"pinyin" && scenario != u"pin" && !soak)
         || !countOk || minimumReleases <= 0)
         return 2;
 
     QQmlApplicationEngine engine;
     engine.addImportPath(arguments.at(0));
-    engine.setInitialProperties({{QStringLiteral("scenario"), soak ? QStringLiteral("direct") : scenario}});
+    engine.setInitialProperties({{QStringLiteral("scenario"), soak ? QStringLiteral("direct") : scenario},
+                                 {QStringLiteral("loadKeyboard"), !memory}});
     engine.load(QUrl(QStringLiteral("qrc:/probe/Probe.qml")));
     auto *window = engine.rootObjects().isEmpty() ? nullptr
         : qobject_cast<QQuickWindow *>(engine.rootObjects().front());
@@ -266,17 +271,31 @@ int main(int argc, char **argv)
     window->showFullScreen();
     const QString editorName = scenario == u"pin" ? QStringLiteral("probePin") : QStringLiteral("probeEditor");
     auto *editor = window->findChild<QQuickItem *>(editorName);
-    auto *keyboard = window->findChild<QQuickItem *>(QStringLiteral("probeKeyboard"));
-    auto *controller = keyboard ? keyboard->property("controller").value<QObject *>() : nullptr;
-    if (!editor || !keyboard || !controller)
+    if (!editor)
         return 1;
     if (soak) {
         auto *pin = window->findChild<QQuickItem *>(QStringLiteral("probePin"));
         if (!pin)
             return 1;
-        QTimer::singleShot(500, window, [=] { startSoak(window, editor, pin, controller, minimumReleases); });
+        QTimer::singleShot(500, window, [=] {
+            const int hostPss = memory ? processPssKiB() : -1;
+            window->setProperty("loadKeyboard", true);
+            const auto *keyboard = window->findChild<QQuickItem *>(QStringLiteral("probeKeyboard"));
+            auto *controller = keyboard ? keyboard->property("controller").value<QObject *>() : nullptr;
+            if (!controller || (memory && hostPss < 0)) {
+                qCritical("Could not load keyboard or measure host PSS");
+                QCoreApplication::exit(1);
+                return;
+            }
+            startSoak(window, editor, pin, controller, minimumReleases, hostPss);
+        });
         return app.exec();
     }
+
+    auto *keyboard = window->findChild<QQuickItem *>(QStringLiteral("probeKeyboard"));
+    auto *controller = keyboard ? keyboard->property("controller").value<QObject *>() : nullptr;
+    if (!controller)
+        return 1;
 
     Metrics metrics(window);
     CandidateObserver candidates(controller, metrics);

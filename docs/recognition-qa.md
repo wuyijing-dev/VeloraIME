@@ -59,5 +59,8 @@ export LD_LIBRARY_PATH="/usr/local/qt6.12.0/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_P
 ```sh
 export VELORA_PACK_TEST_FIXTURES=/tmp/velora-qa/fixtures
 /tmp/velora-qa/velora_word_pack_tests validatesImportAndRollback \
-  managerExposesVerifiedSnapshot recoversVerifiedPreviousVersionOnRestart
+  managerExposesVerifiedSnapshot recoversVerifiedPreviousVersionOnRestart \
+  preservesSnapshotOnPartialWriteFailure recoversAfterUpdaterTerminatesMidWrite
 ```
+
+RK3568 上的最后两个用例限制更新进程的写入大小，覆盖有效新版清单落盘后写入失败，以及更新进程在同一路径上终止。两个用例均验证旧版词包和状态字节一致，重启仍能读取，随后可重试。主机装有 `strace` 且允许 `ptrace` 时，完整 CTest 还会在新版清单和正文都暂存成功后，于 `state.json` 的提交写入注入 `ENOSPC` 与 `SIGKILL`。

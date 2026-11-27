@@ -86,6 +86,15 @@ Item {
 
             ShaderEffect {
                 anchors.fill: parent
+
+                // The already blurred material has about one sample per
+                // logical pixel. Keep its live capture, but avoid running the
+                // lens for every physical pixel on scaled displays.
+                readonly property real materialPixelRatio: root.lightMaterial ? 0.75 : 1.0
+                layer.enabled: Screen.devicePixelRatio > materialPixelRatio * 1.25
+                layer.textureSize: Qt.size(Math.max(1, Math.ceil(width * materialPixelRatio)), Math.max(1, Math.ceil(height * materialPixelRatio)))
+                layer.smooth: true
+
                 property var source: sceneTexture
                 property size panelSize: Qt.size(width, height)
                 property color tint: root.theme.surfaceTint

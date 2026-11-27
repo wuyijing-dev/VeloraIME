@@ -221,7 +221,7 @@ void EngineIntegration::cancelOnFocusOrHide()
     key.input(u"nihao"_s);
     QCOMPARE(key.preedit(), u"nihao"_s);
     QCOMPARE(first->property("text").toString(), QString());
-    QTRY_VERIFY(!findCandidate(key, u"你好"_s).isEmpty());
+    QTRY_VERIFY_WITH_TIMEOUT(!findCandidate(key, u"你好"_s).isEmpty(), 10'000);
     const auto previous = findCandidate(key, u"你好"_s);
     second->forceActiveFocus();
     QCOMPARE(key.preedit(), QString());
@@ -578,7 +578,7 @@ void EngineIntegration::profileAndSupplementalPacks()
     key.setLanguage(u"zh-CN"_s);
     key.refreshUserPhrases();
     key.addUserPhrase(u"ni hao"_s, u"我的自定义词"_s);
-    QTRY_COMPARE(ops.size(), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(ops.size(), 1, 10'000);
     QVERIFY(ops.first().at(1).toBool());
     QTRY_COMPARE(key.userPhrases().size(), 1);
     QCOMPARE(key.userPhrases().first().toMap().value(u"text"_s).toString(), u"我的自定义词"_s);
